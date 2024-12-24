@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "414767726831",
+    "project_id": "RollaTravel-d03a4",
+    "storage_bucket": "RollaTravel-d03a4.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:414767726831:android:978f6d9e95ec3dfd211b1a",
+        "android_client_info": {
+          "package_name": "com.rolla.strava"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "414767726831-uk5gl4s2p8rjbi8kt1uq33evrnkc5hvp.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.rolla.strava",
+            "certificate_hash": "7cd1ca3a92a5e7e572c83b1c18d46337392782dd"
+          }
+        },
+        {
+          "client_id": "414767726831-bi7274hvrs6ntjacg68p9p91rp56qbm4.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCFJgW7bDpvt1CV137ggXN8A7Rcr5MP678"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "414767726831-bi7274hvrs6ntjacg68p9p91rp56qbm4.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
