@@ -10,7 +10,8 @@ enum ButtonWidgetType {
   settingText,
   followingText,
   startTripTitle,
-  endTripTitle
+  endTripTitle,
+  dropPinTitle
 }
 
 class ButtonWidget extends StatefulWidget {
@@ -20,14 +21,13 @@ class ButtonWidget extends StatefulWidget {
   final Color? textColor;
   final Color? fullColor;
 
-  const ButtonWidget({
-    super.key,
-    required this.btnType,
-    required this.onPressed,
-    required this.borderColor,
-    required this.textColor,
-    required this.fullColor
-  });
+  const ButtonWidget(
+      {super.key,
+      required this.btnType,
+      required this.onPressed,
+      required this.borderColor,
+      required this.textColor,
+      required this.fullColor});
 
   @override
   State<ButtonWidget> createState() => _ButtonWidgetState();
@@ -39,16 +39,16 @@ class _ButtonWidgetState extends State<ButtonWidget> {
     String btnTitle;
     switch (widget.btnType) {
       case ButtonWidgetType.loginText:
-        btnTitle = login_title;
+        btnTitle = logintitle;
         break;
       case ButtonWidgetType.continueText:
-        btnTitle = continue_text;
+        btnTitle = continuetext;
         break;
       case ButtonWidgetType.createAccountTitle:
-        btnTitle = create_account;
+        btnTitle = createaccount;
         break;
       case ButtonWidgetType.editProfileText:
-        btnTitle = edit_profile;
+        btnTitle = editprofile;
         break;
       case ButtonWidgetType.followingText:
         btnTitle = following;
@@ -57,13 +57,15 @@ class _ButtonWidgetState extends State<ButtonWidget> {
         btnTitle = settings;
         break;
       case ButtonWidgetType.startTripTitle:
-        btnTitle = start_trip;
+        btnTitle = starttrip;
         break;
       case ButtonWidgetType.endTripTitle:
-        btnTitle = end_trip;
+        btnTitle = endtrip; 
+      case ButtonWidgetType.dropPinTitle:
+        btnTitle = dropPinTitle;
         break;
-      default:
-        btnTitle = "unknow";
+      // default:
+      //   btnTitle = "unknow";
     }
     return Stack(
       alignment: Alignment.center,
@@ -77,27 +79,30 @@ class _ButtonWidgetState extends State<ButtonWidget> {
             height: vh(context, 5),
             child: Container(
               decoration: BoxDecoration(
-                color:  widget.fullColor ,
-                border: Border.all(color: widget.borderColor!),
-                borderRadius: BorderRadius.circular(15)
-              ),
+                  color: widget.fullColor,
+                  border: Border.all(color: widget.borderColor!),
+                  borderRadius: BorderRadius.circular(15)),
             ),
           ),
         ),
         Positioned.fill(
           child: TextButton(
-            style: TextButton.styleFrom(
-              foregroundColor: const Color(0XFF000000),
-          
-            ),
-            onPressed: widget.onPressed,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(btnTitle, style: TextStyle(color:  widget.textColor!, fontFamily: 'KadawBold'),),
-              ],
-            ) 
-          ),
+              style: TextButton.styleFrom(
+                  foregroundColor: const Color(0XFF000000),
+                  padding: EdgeInsets.zero),
+              onPressed: widget.onPressed,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    btnTitle,
+                    style: TextStyle(
+                        color: widget.textColor!,
+                        fontSize: 13,
+                        fontFamily: 'interBold'),
+                  ),
+                ],
+              )),
         ),
       ],
     );

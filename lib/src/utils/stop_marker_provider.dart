@@ -7,7 +7,8 @@ class MarkerData {
   final String imagePath;
   final String caption;
 
-  MarkerData({required this.location, required this.imagePath, required this.caption});
+  MarkerData(
+      {required this.location, required this.imagePath, required this.caption});
 }
 
 // State provider for managing markers

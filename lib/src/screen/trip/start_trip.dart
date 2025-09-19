@@ -1,27 +1,33 @@
+import 'dart:convert';
 import 'package:RollaTravel/src/constants/app_button.dart';
 import 'package:RollaTravel/src/constants/app_styles.dart';
-import 'package:RollaTravel/src/screen/trip/destination_screen.dart';
+import 'package:RollaTravel/src/screen/droppin/drop_pin.dart';
+import 'package:RollaTravel/src/screen/droppin/limit_trip_screen.dart';
+import 'package:RollaTravel/src/screen/droppin/photo_select_screen.dart';
 import 'package:RollaTravel/src/screen/trip/end_trip.dart';
 import 'package:RollaTravel/src/screen/trip/sound_screen.dart';
 import 'package:RollaTravel/src/screen/trip/trip_settting_screen.dart';
 import 'package:RollaTravel/src/screen/trip/trip_tag_screen.dart';
+import 'package:RollaTravel/src/services/api_service.dart';
 import 'package:RollaTravel/src/translate/en.dart';
+import 'package:RollaTravel/src/utils/common.dart';
 import 'package:RollaTravel/src/utils/index.dart';
+import 'package:RollaTravel/src/utils/location.permission.dart';
+import 'package:RollaTravel/src/utils/spinner_loader.dart';
 import 'package:RollaTravel/src/utils/stop_marker_provider.dart';
+import 'package:RollaTravel/src/utils/trip_marker_provider.dart';
 import 'package:RollaTravel/src/widget/bottombar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:logger/logger.dart';
 import 'package:RollaTravel/src/utils/global_variable.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
 import 'dart:async';
 import 'package:intl/intl.dart';
-import 'dart:math';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 class StartTripScreen extends ConsumerStatefulWidget {
   const StartTripScreen({super.key});
@@ -40,16 +46,37 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
   final logger = Logger();
   LatLng? currentLocation;
   final TextEditingController _captionController = TextEditingController();
-  String editDestination = 'Edit destination';
   String initialSound = "Edit Playlist";
   double totalDistanceInMiles = 0;
+  List<LatLng> pathCoordinates = [];
+  bool isStateRestored = false;
+  bool _isLoading = false;
+  String? startAddress;
+  String? endAddress;
+  String stopAddressesString = "";
+  List<String> formattedStopAddresses = [];
+  final FocusNode _captionFocusNode = FocusNode();
+  final uuid = const Uuid();
+  int _currentLength = 0;
+  static const String mapboxAccessToken =
+      "pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw";
+
+  final List<String> _mapStyles = [
+    "https://api.mapbox.com/styles/v1/mapbox/streets-v11/tiles/{z}/{x}/{y}?access_token=$mapboxAccessToken",
+    "https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/{z}/{x}/{y}?access_token=$mapboxAccessToken",
+    "https://api.mapbox.com/styles/v1/mapbox/light-v10/tiles/{z}/{x}/{y}?access_token=$mapboxAccessToken",
+    "https://api.mapbox.com/styles/v1/mapbox/dark-v10/tiles/{z}/{x}/{y}?access_token=$mapboxAccessToken",
+  ];
 
   @override
   void initState() {
     super.initState();
-    _restoreState();
-    _getCurrentLocation();
-    _startTrackingMovement();
+    _captionController.addListener(_updateTextLength);
+    _getFetchTripData();
+    _checkLocationServices();
+    if (GlobalVariables.tripCaption != null) {
+      _captionController.text = GlobalVariables.tripCaption!;
+    }
   }
 
   @override
@@ -57,185 +84,417 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
     super.dispose();
     _mapController.dispose();
     _positionStreamSubscription?.cancel();
+    _captionController.removeListener(_updateTextLength);
+    _captionFocusNode.dispose();
+    _captionController.dispose();
+  }
+
+  void _updateTextLength() {
+    setState(() {
+      _currentLength = _captionController.text.length;
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+  }
+
+  void _getFetchTripData() async {
+    final prefs = await SharedPreferences.getInstance();
+    int? tripId = prefs.getInt("tripId");
+    // logger.i("saved tripid : $tripId");
+    if (tripId != null) {
+      final apiserice = ApiService();
+      try {
+        _showLoadingDialog();
+        final tripData = await apiserice.fetchTripData(tripId);
+        // logger.i(tripData);
+        if ((tripData['trips'] as List).isEmpty) {
+          logger.i("no trip in server");
+          _hideLoadingDialog();
+          ref.read(tripMarkersProvider.notifier).state = [];
+          GlobalVariables.isTripStarted = false;
+          GlobalVariables.droppinCount = 0;
+          ref.read(isTripStartedProvider.notifier).state = false;
+          await prefs.remove("tripId");
+          await prefs.remove("dropcount");
+          await prefs.remove("destination_text");
+          await prefs.remove("start_date");
+          await prefs.remove("caption_text");
+          _getCurrentLocation();
+        } else {
+          ref.read(tripMarkersProvider.notifier).state = [];
+          GlobalVariables.isTripStarted = true;
+          ref.read(isTripStartedProvider.notifier).state = true;
+          String? destinationText = prefs.getString('destination_text');
+          if (destinationText != null) {
+            ref.read(isTripStartedProvider.notifier).state = true;
+            GlobalVariables.editDestination = destinationText;
+            GlobalVariables.tripStartDate = prefs.getString('start_date');
+            GlobalVariables.tripCaption = prefs.getString('caption_text');
+          }
+
+          var destinationTextAddress =
+              tripData['trips'][0]['destination_text_address'];
+          if (tripData['trips'][0]['trip_caption'] != null &&
+              tripData['trips'][0]['trip_caption'] != "null") {
+            _captionController.text = tripData['trips'][0]['trip_caption'];
+          }
+          if (destinationTextAddress is String) {
+            destinationTextAddress = jsonDecode(destinationTextAddress);
+          }
+          if (tripData['trip_tags'] != null &&
+              tripData['trip_tags'] != "null") {
+            try {
+              List<int> tags =
+                  List<int>.from(jsonDecode(tripData['trip_tags']));
+              GlobalVariables.selectedUserIds.addAll(tags);
+              logger.i(GlobalVariables.selectedUserIds);
+            } catch (e) {
+              logger.i('Error parsing trip_tags: $e');
+            }
+          }
+          List<String> songs = tripData['trips'][0]['trip_sound'].split(',');
+
+          GlobalVariables.song1 = songs.isNotEmpty ? songs[0].trim() : null;
+          GlobalVariables.song2 = songs.length > 1 ? songs[1].trim() : null;
+          GlobalVariables.song3 = songs.length > 2 ? songs[2].trim() : null;
+          GlobalVariables.song4 = songs.length > 3 ? songs[3].trim() : null;
+
+          GlobalVariables.editDestination = destinationTextAddress[0];
+
+          GlobalVariables.tripStartDate =
+              tripData['trips'][0]['trip_start_date'];
+          List stopLocations = tripData['trips'][0]['stop_locations'];
+          List droppins = tripData['trips'][0]['droppins'];
+
+          List<TripMarkerData> markers = [];
+
+          stopLocations.asMap().forEach((i, stop) {
+            if (stop is Map &&
+                stop.containsKey('latitude') &&
+                stop.containsKey('longitude')) {
+              double latitude = stop['latitude'];
+              double longitude = stop['longitude'];
+
+              String imagePath = "";
+              String caption = "Trip Stop";
+              String delayTime = "";
+
+              var droppin = droppins.firstWhere(
+                (d) => d['stop_index'] == (i + 1),
+                orElse: () => null,
+              );
+
+              if (droppin != null) {
+                imagePath = droppin['image_path'] ?? "";
+                caption = droppin['image_caption'] ?? "No caption";
+                delayTime = droppin['deley_time'];
+              }
+
+              TripMarkerData marker = TripMarkerData(
+                  location: LatLng(latitude, longitude),
+                  imagePath: imagePath,
+                  caption: caption,
+                  delayTime: delayTime);
+              markers.add(marker);
+            }
+          });
+          ref.read(tripMarkersProvider.notifier).state = markers;
+          GlobalVariables.droppinCount = markers.length;
+          // logger.i(GlobalVariables.droppinCount);
+
+          var startLocation = tripData['trips'][0]['start_location'];
+          if (startLocation is String) {
+            RegExp regExp = RegExp(
+                r'LatLng\((latitude:([0-9.-]+), longitude:([0-9.-]+))\)');
+            Match? match = regExp.firstMatch(startLocation);
+
+            if (match != null) {
+              double latitude = double.tryParse(match.group(2) ?? "0.0") ?? 0.0;
+              double longitude =
+                  double.tryParse(match.group(3) ?? "0.0") ?? 0.0;
+              LatLng startLatLng = LatLng(latitude, longitude);
+              ref.read(staticStartingPointProvider.notifier).state ??=
+                  startLatLng;
+              setState(() {
+                isStateRestored = true;
+              });
+            } else {
+              logger.e("Failed to parse start location string");
+              setState(() {
+                isStateRestored = true;
+              });
+            }
+          }
+          _hideLoadingDialog();
+        }
+      } catch (e) {
+        logger.e("Error fetching trip data: $e");
+      } finally {
+        _hideLoadingDialog();
+      }
+    } else {
+      ref.read(tripMarkersProvider.notifier).state = [];
+      setState(() {
+        isStateRestored = true;
+      });
+      if (PermissionService().hasLocationPermission) {
+        _getCurrentLocation();
+      }
+      logger.w("No tripId found in local database");
+    }
+  }
+
+  void _showLoadingDialog() {
+    setState(() {
+      _isLoading = true;
+    });
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return const AlertDialog(
+          content: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              SpinningLoader(),
+              SizedBox(width: 20),
+              Text("Loading..."),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _hideLoadingDialog() {
+    if (_isLoading) {
+      Navigator.of(context).pop();
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _checkLocationServices() async {
+    bool isLocationEnabled = await Geolocator.isLocationServiceEnabled();
+    LocationPermission permission = await Geolocator.checkPermission();
+
+    if (!isLocationEnabled) {
+      logger.e("Location services are disabled!");
+      _showLocationDisabledDialog();
+      return;
+    }
+
+    // ✅ If permission is denied, request it
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        logger.e("Location permission denied!");
+        _showPermissionDeniedDialog();
+        return;
+      }
+    }
+
+    // ✅ If permission is permanently denied, open settings
+    if (permission == LocationPermission.deniedForever) {
+      logger.e("Location permission permanently denied!");
+      _showPermissionDeniedDialog();
+      return;
+    }
+  }
+
+  void _showLocationDisabledDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text("Location Services Disabled"),
+          content: const Text(
+            "Please enable location services to track your movement.",
+          ),
+          actions: [
+            TextButton(
+              child: const Text("Open Settings"),
+              onPressed: () async {
+                await Geolocator.openLocationSettings();
+                // ignore: use_build_context_synchronously
+                Navigator.of(context).pop();
+              },
+            ),
+            TextButton(
+              child: const Text("Cancel"),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _getCurrentLocation() async {
-    final permissionStatus = await Permission.location.request();
-    if (permissionStatus.isGranted) {
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.whileInUse ||
+        permission == LocationPermission.always) {
       Position position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
         ),
       );
-      currentLocation = LatLng(position.latitude, position.longitude);
-      // ✅ Update only the moving location (for display purposes)
-      ref.read(movingLocationProvider.notifier).state ??= currentLocation;
-      _mapController.move(currentLocation!, 15.0);
-    } else if (permissionStatus.isDenied ||
-        permissionStatus.isPermanentlyDenied) {
-      logger.i("Location permission denied. Redirecting to settings.");
-      _showPermissionDeniedDialog();
-    } else {
-      logger.i("Location permission status: $permissionStatus");
-    }
-  }
-
-  Future<void> _startTrackingMovement() async {
-    if (_positionStreamSubscription != null) {
-      return; // Prevent multiple listeners
-    }
-    _positionStreamSubscription = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 10,
-      ),
-    ).listen((Position position) async {
-      final LatLng newLocation = LatLng(position.latitude, position.longitude);
-
-      if (!GlobalVariables.isTripStarted) {
-        ref.read(movingLocationProvider.notifier).state = newLocation;
-        ref.read(staticStartingPointProvider.notifier).state = newLocation;
-      } else {
-        final previousLocation = ref.read(movingLocationProvider);
-        ref.read(movingLocationProvider.notifier).state = newLocation;
-
-        if (previousLocation != null) {
-          await _fetchDrivingRoute(previousLocation, newLocation);
-        }
-      }
-
-      _mapController.move(newLocation, 15.0);
-    });
-  }
-
-  Future<void> _fetchDrivingRoute(LatLng start, LatLng end) async {
-    final url =
-        'https://api.mapbox.com/directions/v5/mapbox/driving/${start.longitude},${start.latitude};${end.longitude},${end.latitude}?geometries=polyline6&overview=full&alternatives=false&steps=true&access_token=pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw';
-
-    try {
-      final response = await http.get(Uri.parse(url));
-      if (response.statusCode == 200) {
-        final jsonResponse = jsonDecode(response.body);
-        final List<dynamic> routes = jsonResponse['routes'];
-        if (routes.isNotEmpty) {
-          final String polyline = routes[0]['geometry'];
-          final List<LatLng> decodedPolyline = _decodePolyline6(polyline);
-
-          final double distanceInMeters =
-              (routes[0]['distance'] as num).toDouble();
-          final double newMiles = distanceInMeters / 1609.34;
-
-          final currentTotal = ref.read(totalDistanceProvider);
-          ref.read(totalDistanceProvider.notifier).state =
-              currentTotal + newMiles;
-          GlobalVariables.totalDistance = currentTotal + newMiles;
-
-          // Get current path
-          final currentPath = ref.read(pathCoordinatesProvider);
-
-          if (currentPath.isEmpty) {
-            // First segment of the route
-            ref.read(pathCoordinatesProvider.notifier).state = decodedPolyline;
-          } else {
-            // Find the last point in the current path
-            final lastPoint = currentPath.last;
-
-            // Find where to connect the new segment
-            int connectionIndex = 0;
-            double minDistance = double.infinity;
-
-            // Find the closest point in the new polyline to connect
-            for (int i = 0; i < decodedPolyline.length; i++) {
-              final distance =
-                  _calculateRealDistance(lastPoint, decodedPolyline[i]);
-              if (distance < minDistance) {
-                minDistance = distance;
-                connectionIndex = i;
-              }
-            }
-
-            // Create new path by:
-            // 1. Taking all points from current path
-            // 2. Adding only new points from the new segment
-            final List<LatLng> newPath = [...currentPath];
-
-            // Only add points that are actually new (after the connection point)
-            for (int i = connectionIndex; i < decodedPolyline.length; i++) {
-              final newPoint = decodedPolyline[i];
-              // Check if this point is significantly different from the last added point
-              if (newPath.isEmpty ||
-                  _calculateRealDistance(newPath.last, newPoint) > 10) {
-                // 10 meters threshold
-                newPath.add(newPoint);
-              }
-            }
-
-            // Update the path
-            ref.read(pathCoordinatesProvider.notifier).state = newPath;
+      setState(() {
+        currentLocation = LatLng(position.latitude, position.longitude);
+        ref.read(staticStartingPointProvider.notifier).state ??=
+            currentLocation;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (mounted && currentLocation != null) {
+          try {
+            // Only move the map if the controller is ready
+            _mapController.move(currentLocation!, 12.0);
+          } catch (e) {
+            logger.e("Error moving map: $e");
           }
         }
-      }
-    } catch (e) {
-      logger.e('Error fetching route: $e');
+      });
+      return;
     }
-  }
 
-  // Helper method to calculate real-world distance
-  double _calculateRealDistance(LatLng point1, LatLng point2) {
-    const double earthRadius = 6371000; // Earth's radius in meters
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        logger.i("Location permission denied.");
+        _showPermissionDeniedDialog();
+        return;
+      }
+    }
 
-    final lat1 = point1.latitude * pi / 180;
-    final lat2 = point2.latitude * pi / 180;
-    final dLat = (point2.latitude - point1.latitude) * pi / 180;
-    final dLon = (point2.longitude - point1.longitude) * pi / 180;
-
-    final a = sin(dLat / 2) * sin(dLat / 2) +
-        cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2);
-
-    final c = 2 * atan2(sqrt(a), sqrt(1 - a));
-
-    return earthRadius * c;
+    if (permission == LocationPermission.deniedForever) {
+      logger.i("Location permission permanently denied.");
+      _showPermissionDeniedDialog();
+      return;
+    }
   }
 
   void toggleTrip() {
     if (GlobalVariables.isTripStarted) {
       // ✅ End the trip
-      _endTrip();
+      sendTripData();
     } else {
       // ✅ Start the trip
-      _startTrip();
+      // _startTrip();
+      _noTrackingStartTrip();
     }
   }
 
-  void _startTrip() {
+  void droppinClicked () {
+    logger.i(GlobalVariables.isTripStarted);
+    if (!GlobalVariables.isTripStarted) {
+      Navigator.push(context,
+          MaterialPageRoute(builder: (_) => const DropPinScreen()));
+    } else {
+      if (GlobalVariables.droppinCount > 6) {
+        Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const LimitDropPinScreen()));
+      } else {
+        Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const PhotoSelectScreen()));
+      }
+    }
+  }
+
+  Future<void> _noTrackingStartTrip() async {
+    if (GlobalVariables.editDestination == null) {
+      _showDestinationAlert(context);
+      return;
+    }
     GlobalVariables.isTripStarted = true;
     ref.read(isTripStartedProvider.notifier).state = true;
 
-    // ✅ Record trip start time
     DateTime now = DateTime.now();
     String formattedDate = DateFormat('yyyy-MM-dd HH:mm:ss').format(now);
     GlobalVariables.tripStartDate = formattedDate;
 
-    // ✅ Set static starting point (this is the current location at the moment the trip starts)
-    final currentLocation = ref.read(movingLocationProvider);
-    if (currentLocation != null) {
-      // ✅ Set this location as the starting point for the trip
-      ref.read(staticStartingPointProvider.notifier).state = currentLocation;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('destination_text', GlobalVariables.editDestination!);
+    await prefs.setString('start_date', formattedDate);
+    if (GlobalVariables.tripCaption != null) {
+      await prefs.setString('caption_text', GlobalVariables.tripCaption!);
     }
-
-    // ✅ Clear previous path to start a new trip
-    ref.read(pathCoordinatesProvider.notifier).state = [];
-
-    // ✅ Start tracking user movement
-    _startTrackingMovement();
   }
 
-  void _endTrip() {
-    LatLng? startLocation = ref.read(staticStartingPointProvider);
-    LatLng? endLocation = ref.read(movingLocationProvider);
-    List<MarkerData> stopMarkers = ref.read(markersProvider);
+  void _showDestinationAlert(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text("Destination Required"),
+          content: const Text(
+              "Please enter the destination before starting the trip."),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop(); // Close dialog
+              },
+              child: const Text("OK"),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
-    // ✅ Record trip end time
+  Future<void> sendTripData() async {
+    _showLoadingDialog();
+    final apiserice = ApiService();
+    Position position = await Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+      ),
+    );
+
+    LatLng? startLocation = ref.read(staticStartingPointProvider);
+    LatLng? endLocation = LatLng(position.latitude, position.longitude);
+    List<TripMarkerData> stopMarkers = ref.read(tripMarkersProvider);
+    // logger.i("stopmakers : $stopMarkers");
+    await _fetchAddresses(startLocation, endLocation, stopMarkers);
+
+    final tripCoordinates = ref
+        .read(pathCoordinatesProvider)
+        .map((latLng) => {
+              'latitude': latLng.latitude,
+              'longitude': latLng.longitude,
+            })
+        .toList();
+
+    if (stopMarkers.isEmpty) {
+      _hideLoadingDialog();
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: const Text("Warning"),
+            content: const Text(
+                "You need to add at least one stop marker (drop pin) before ending the trip."),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+                child: const Text("OK"),
+              ),
+            ],
+          );
+        },
+      );
+      return;
+    }
+
     DateTime now = DateTime.now();
     String formattedDate = DateFormat('yyyy-MM-dd HH:mm:ss').format(now);
     GlobalVariables.tripEndDate = formattedDate;
@@ -243,85 +502,314 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
     String tripMiles =
         "${GlobalVariables.totalDistance.toStringAsFixed(3)} miles";
 
-    if (GlobalVariables.tripStartDate != null &&
-        GlobalVariables.tripEndDate != null) {
-      // ✅ End the trip and navigate to the EndTripScreen
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => EndTripScreen(
-            startLocation: startLocation,
-            endLocation: endLocation,
-            stopMarkers: stopMarkers,
-            tripStartDate: GlobalVariables.tripStartDate!,
-            tripEndDate: GlobalVariables.tripEndDate!,
-            tripDistance: tripMiles,
+    final stopLocations = stopMarkers
+        .map((marker) => {
+              'latitude': marker.location.latitude,
+              'longitude': marker.location.longitude,
+            })
+        .toList();
+
+    String formattedDestination = '["${GlobalVariables.editDestination}"]';
+
+    final prefs = await SharedPreferences.getInstance();
+    int? tripId = prefs.getInt("tripId");
+
+    List<String> songs = [
+      if (GlobalVariables.song1 != null && GlobalVariables.song1!.isNotEmpty)
+        GlobalVariables.song1!,
+      if (GlobalVariables.song2 != null && GlobalVariables.song2!.isNotEmpty)
+        GlobalVariables.song2!,
+      if (GlobalVariables.song3 != null && GlobalVariables.song3!.isNotEmpty)
+        GlobalVariables.song3!,
+      if (GlobalVariables.song4 != null && GlobalVariables.song4!.isNotEmpty)
+        GlobalVariables.song4!
+    ];
+    String arrangedSongs = songs.join(',');
+    if (GlobalVariables.delaySetting == 0) {
+      final response = await apiserice.updateTrip(
+          tripId: tripId!,
+          userId: GlobalVariables.userId!,
+          startAddress: startAddress!,
+          stopAddresses: stopAddressesString,
+          destinationAddress: endAddress!,
+          destinationTextAddress: formattedDestination,
+          tripStartDate: GlobalVariables.tripStartDate!,
+          tripEndDate: GlobalVariables.tripEndDate!,
+          tripCaption: GlobalVariables.tripCaption ?? "",
+          tripTag: GlobalVariables.selectedUserIds.toString(),
+          tripMiles: tripMiles,
+          tripSound: arrangedSongs,
+          stopLocations: stopLocations,
+          tripCoordinates: tripCoordinates,
+          startLocation: startLocation.toString(),
+          destinationLocation: endLocation.toString(),
+          droppins: [],
+          mapStyle: GlobalVariables.mapStyleSelected.toString());
+
+      if (!mounted) return;
+
+      if (response['success'] == true) {
+        logger.i(response);
+        await prefs.remove("tripId");
+        await prefs.remove("dropcount");
+        await prefs.remove("destination_text");
+        await prefs.remove("start_date");
+        await prefs.remove("caption_text");
+        String jsonStr = response['trip']['destination_text_address'] ?? '[]';
+
+        // Parse it to a List<String>
+        List<dynamic> parsedList = [];
+        try {
+          parsedList = jsonDecode(jsonStr);
+        } catch (e) {
+          logger.e("Failed to parse destination_text_address: $e");
+        }
+
+        // Extract first element or empty string if list is empty
+        String destination =
+            parsedList.isNotEmpty ? parsedList[0].toString() : "";
+
+        _hideLoadingDialog();
+        if (!mounted) return;
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => EndTripScreen(
+              startLocation: startLocation,
+              endLocation: endLocation,
+              stopMarkers: stopMarkers,
+              tripStartDate: GlobalVariables.tripStartDate!,
+              tripEndDate: GlobalVariables.tripEndDate!,
+              endDestination: destination,
+              tripSound: response['trip']['trip_sound'],
+            ),
           ),
-        ),
+        );
+        ref.read(isTripStartedProvider.notifier).state = false;
+        GlobalVariables.isTripStarted = false;
+        ref.read(staticStartingPointProvider.notifier).state =
+            ref.read(movingLocationProvider);
+        ref.read(movingLocationProvider.notifier).state = null;
+        ref.read(markersProvider.notifier).state = [];
+        ref.read(totalDistanceProvider.notifier).state = 0.0;
+        GlobalVariables.totalDistance = 0.0;
+        GlobalVariables.tripCaption = null;
+        GlobalVariables.song1 = null;
+        GlobalVariables.song2 = null;
+        GlobalVariables.song3 = null;
+        GlobalVariables.song4 = null;
+        GlobalVariables.editDestination = null;
+        GlobalVariables.selectedUserIds = [];
+        GlobalVariables.droppinCount = 0;
+        ref.read(pathCoordinatesProvider.notifier).state = [];
+      } else {
+        _hideLoadingDialog();
+        String errorMessage =
+            response['error'] ?? 'Failed to create the trip. Please try again.';
+        showDialog(
+          context: context,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              title: const Text("Error"),
+              content: Text(errorMessage),
+              actions: [
+                TextButton(
+                  child: const Text("OK"),
+                  onPressed: () {
+                    ref.read(pathCoordinatesProvider.notifier).state = [];
+                    Navigator.of(context).pop();
+                  },
+                ),
+              ],
+            );
+          },
+        );
+      }
+    } else {
+      // Duration delay;
+      String message;
+
+      switch (GlobalVariables.delaySetting) {
+        case 1:
+          // delay = const Duration(minutes: 30);
+          message = "The trip ends in 30 minutes.";
+          break;
+        case 2:
+          // delay = const Duration(hours: 2);
+          message = "The trip ends in 2 hours.";
+          break;
+        case 3:
+          // delay = const Duration(hours: 12);
+          message = "The trip ends in 12 hours.";
+          break;
+        default:
+          // delay = Duration.zero;
+          message = "Your trip will be uploaded immediately.";
+      }
+
+      if (mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (BuildContext dialogContext) {
+            return AlertDialog(
+              title: const Text("Trip Upload Scheduled"),
+              content: Text(message),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(dialogContext).pop();
+                  },
+                  child: const Text("Cancel"),
+                ),
+                TextButton(
+                  onPressed: () async {
+                    final response = await apiserice.updateTrip(
+                        tripId: tripId!,
+                        userId: GlobalVariables.userId!,
+                        startAddress: startAddress!,
+                        stopAddresses: stopAddressesString,
+                        destinationAddress: endAddress!,
+                        destinationTextAddress: formattedDestination,
+                        tripStartDate: GlobalVariables.tripStartDate!,
+                        tripEndDate: GlobalVariables.tripEndDate!,
+                        tripCaption: GlobalVariables.tripCaption ?? "",
+                        tripTag: GlobalVariables.selectedUserIds.toString(),
+                        tripMiles: tripMiles,
+                        tripSound: arrangedSongs,
+                        stopLocations: stopLocations,
+                        tripCoordinates: tripCoordinates,
+                        startLocation: startLocation.toString(),
+                        destinationLocation: endLocation.toString(),
+                        droppins: [],
+                        mapStyle: GlobalVariables.mapStyleSelected.toString());
+
+                    if (!mounted) return;
+
+                    if (response['success'] == true) {
+                      logger.i(response);
+                      await prefs.remove("tripId");
+                      await prefs.remove("dropcount");
+                      await prefs.remove("destination_text");
+                      await prefs.remove("start_date");
+                      await prefs.remove("caption_text");
+                      String jsonStr =
+                          response['trip']['destination_text_address'] ?? '[]';
+
+                      // Parse it to a List<String>
+                      List<dynamic> parsedList = [];
+                      try {
+                        parsedList = jsonDecode(jsonStr);
+                      } catch (e) {
+                        logger
+                            .e("Failed to parse destination_text_address: $e");
+                      }
+
+                      // Extract first element or empty string if list is empty
+                      String destination =
+                          parsedList.isNotEmpty ? parsedList[0].toString() : "";
+
+                      _hideLoadingDialog();
+                      if (!mounted) return;
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => EndTripScreen(
+                            startLocation: startLocation,
+                            endLocation: endLocation,
+                            stopMarkers: stopMarkers,
+                            tripStartDate: GlobalVariables.tripStartDate!,
+                            tripEndDate: GlobalVariables.tripEndDate!,
+                            endDestination: destination,
+                            tripSound: response['trip']['trip_sound'],
+                          ),
+                        ),
+                      );
+                      ref.read(isTripStartedProvider.notifier).state = false;
+                      GlobalVariables.isTripStarted = false;
+                      ref.read(staticStartingPointProvider.notifier).state =
+                          ref.read(movingLocationProvider);
+                      ref.read(movingLocationProvider.notifier).state = null;
+                      ref.read(markersProvider.notifier).state = [];
+                      ref.read(totalDistanceProvider.notifier).state = 0.0;
+                      GlobalVariables.totalDistance = 0.0;
+                      GlobalVariables.tripCaption = null;
+                      GlobalVariables.song1 = null;
+                      GlobalVariables.song2 = null;
+                      GlobalVariables.song3 = null;
+                      GlobalVariables.song4 = null;
+                      GlobalVariables.editDestination = null;
+                      GlobalVariables.selectedUserIds = [];
+                      ref.read(pathCoordinatesProvider.notifier).state = [];
+                    } else {
+                      _hideLoadingDialog();
+                      String errorMessage = response['error'] ??
+                          'Failed to create the trip. Please try again.';
+                      showDialog(
+                        context: context,
+                        builder: (BuildContext context) {
+                          return AlertDialog(
+                            title: const Text("Error"),
+                            content: Text(errorMessage),
+                            actions: [
+                              TextButton(
+                                child: const Text("OK"),
+                                onPressed: () {
+                                  ref
+                                      .read(pathCoordinatesProvider.notifier)
+                                      .state = [];
+                                  Navigator.of(context).pop();
+                                },
+                              ),
+                            ],
+                          );
+                        },
+                      );
+                    }
+                  },
+                  child: const Text("OK"),
+                ),
+              ],
+            );
+          },
+        );
+      }
+    }
+  }
+
+  Future<void> _fetchAddresses(
+    LatLng? startLocation,
+    LatLng? endLocation,
+    List<TripMarkerData> stopMarkers,
+  ) async {
+    // logger.i(stopMarkers);
+
+    if (startLocation != null) {
+      startAddress = await Common.getAddressFromLocation(startLocation);
+    }
+
+    if (endLocation != null) {
+      endAddress = await Common.getAddressFromLocation(endLocation);
+    }
+
+    if (stopMarkers.isNotEmpty) {
+      List<String?> stopMarkerAddresses = await Future.wait(
+        stopMarkers.map((marker) async {
+          try {
+            final address =
+                await Common.getAddressFromLocation(marker.location);
+            return address ?? "";
+          } catch (e) {
+            logger.e(
+                "Error fetching address for marker at ${marker.location}: $e");
+            return "";
+          }
+        }).toList(),
       );
 
-      // ✅ Reset the trip state
-      ref.read(isTripStartedProvider.notifier).state = false;
-      GlobalVariables.isTripStarted = false;
-
-      // ✅ Reset all trip-related data
-      ref.read(staticStartingPointProvider.notifier).state =
-          ref.read(movingLocationProvider);
-      ref.read(movingLocationProvider.notifier).state = null;
-      ref.read(markersProvider.notifier).state = [];
-      ref.read(totalDistanceProvider.notifier).state = 0.0;
-      GlobalVariables.totalDistance = 0.0;
-    } else {
-      logger.i("tripStartDate is null.");
-    }
-  }
-
-  List<LatLng> _decodePolyline6(String encoded) {
-    List<LatLng> polyline = [];
-    int index = 0, len = encoded.length;
-    int lat = 0, lng = 0;
-
-    while (index < len) {
-      int b, shift = 0, result = 0;
-      do {
-        b = encoded.codeUnitAt(index++) - 63;
-        result |= (b & 0x1f) << shift;
-        shift += 5;
-      } while (b >= 0x20);
-      int deltaLat = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
-      lat += deltaLat;
-
-      shift = 0;
-      result = 0;
-      do {
-        b = encoded.codeUnitAt(index++) - 63;
-        result |= (b & 0x1f) << shift;
-        shift += 5;
-      } while (b >= 0x20);
-      int deltaLng = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
-      lng += deltaLng;
-
-      polyline.add(LatLng(lat / 1E6, lng / 1E6));
-    }
-    return polyline;
-  }
-
-  void _restoreState() {
-    final movingLocation = ref.read(movingLocationProvider);
-    final pathCoordinates = ref.read(pathCoordinatesProvider);
-
-    if (movingLocation != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _mapController.move(movingLocation, 14.0);
-      });
-    }
-
-    // Redraw the path
-    if (pathCoordinates.isNotEmpty) {
-      // Delay the modification to avoid the error
-      Future(() {
-        ref.read(pathCoordinatesProvider.notifier).state = [...pathCoordinates];
-      });
+      formattedStopAddresses =
+          stopMarkerAddresses.map((address) => '"$address"').toList();
+      stopAddressesString = '[${formattedStopAddresses.join(', ')}]';
     }
   }
 
@@ -332,14 +820,15 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
         return AlertDialog(
           title: const Text("Location Permission Required"),
           content: const Text(
-            "To access your location, please enable permissions in System Preferences > Security & Privacy > Privacy > Location Services.",
+            "To access your location, please enable permissions in Settings > Privacy & Security > Location Services.",
           ),
           actions: [
             TextButton(
               child: const Text("Open Settings"),
               onPressed: () async {
-                await openAppSettings();
+                await Geolocator.openAppSettings(); // Open settings for iOS
                 if (mounted) {
+                  // ignore: use_build_context_synchronously
                   Navigator.of(context).pop();
                 }
               },
@@ -366,8 +855,67 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
         MaterialPageRoute(builder: (context) => const TripTagSearchScreen()));
   }
 
-  Future<bool> _onWillPop() async {
-    return false;
+  void _onDestintionClick() {
+    TextEditingController textController =
+        TextEditingController(text: GlobalVariables.editDestination ?? "");
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text(
+            "Edit Destination",
+            style: TextStyle(fontFamily: 'interBold'),
+          ),
+          content: TextField(
+            controller: textController,
+            maxLength: 30, // ✅ Limit to 30 characters
+            maxLines: 1, // ✅ Single line only
+            decoration: const InputDecoration(
+              hintText: "Enter destination",
+              hintStyle: TextStyle(fontFamily: 'inter'),
+              counterText: '', // ✅ Hide counter text
+              focusedBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: kColorHereButton),
+              ),
+              enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.grey),
+              ),
+            ),
+            style: const TextStyle(
+              fontFamily: 'inter',
+              fontSize: 14,
+              overflow: TextOverflow.ellipsis, // ✅ Prevent wrapping
+            ),
+            textInputAction: TextInputAction.done,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop(); // Close dialog
+              },
+              child: const Text(
+                "Cancel",
+                style: TextStyle(fontFamily: 'inter', color: kColorButtonPrimary),
+              ),
+            ),
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  GlobalVariables.editDestination = textController.text;
+                });
+                Navigator.of(context).pop(); // Close dialog
+              },
+              child: const Text(
+                "OK",
+                style: TextStyle(fontFamily: 'inter', color: kColorCreateButton),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
   }
 
   @override
@@ -375,11 +923,19 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
     final pathCoordinates = ref.watch(pathCoordinatesProvider);
     final movingLocation = ref.watch(movingLocationProvider);
     final staticStartingPoint = ref.watch(staticStartingPointProvider);
+    // final isTripStarted = ref.watch(isTripStartedProvider);
 
     return Scaffold(
-      body: WillPopScope(
-        onWillPop: _onWillPop,
+      backgroundColor: kColorWhite,
+      body: PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop) {
+            return;
+          }
+        },
         child: Scaffold(
+          backgroundColor: Colors.white,
           resizeToAvoidBottomInset: true,
           body: SingleChildScrollView(
             child: Column(
@@ -388,14 +944,15 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
                 SizedBox(height: vhh(context, 5)),
                 Padding(
                   padding: EdgeInsets.only(
-                      left: vww(context, 4), right: vww(context, 4)),
+                      left: vww(context, 0), right: vww(context, 4)),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Image.asset(
                         'assets/images/icons/logo.png',
-                        width: vww(context, 20),
+                        width: 90,
+                        height: 80,
                       ),
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.center,
@@ -405,7 +962,7 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
                               _onTagClicked();
                             },
                             child: Image.asset(
-                              'assets/images/icons/add_car1.png',
+                              'assets/images/icons/tag_icon.png',
                               width: vww(context, 15),
                             ),
                           ),
@@ -415,7 +972,7 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
                             },
                             child: Image.asset(
                               'assets/images/icons/setting.png',
-                              width: vww(context, 15),
+                              width: vww(context, 15.5),
                             ),
                           ),
                         ],
@@ -423,14 +980,11 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
                     ],
                   ),
                 ),
-
                 Padding(
                   padding: EdgeInsets.symmetric(horizontal: vww(context, 4)),
                   child: const Divider(color: kColorGrey, thickness: 1),
                 ),
-
                 SizedBox(height: vhh(context, 1)),
-
                 Padding(
                   padding: EdgeInsets.symmetric(horizontal: vww(context, 4)),
                   child: Column(
@@ -442,36 +996,30 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
                             destination,
                             style: TextStyle(
                                 color: kColorBlack,
-                                fontSize: 14,
-                                fontFamily: 'Kadaw'),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: -0.1,
+                                fontFamily: 'inter'),
                           ),
                           GestureDetector(
-                            onTap: () async {
-                              final result = await Navigator.push(
-                                context,
-                                PageRouteBuilder(
-                                  pageBuilder: (context, animation1,
-                                          animation2) =>
-                                      DestinationScreen(
-                                          initialDestination: editDestination),
-                                  transitionDuration: Duration.zero,
-                                  reverseTransitionDuration: Duration.zero,
-                                ),
-                              );
-                              if (result != null) {
-                                setState(() {
-                                  editDestination = result;
-                                });
-                              }
+                            onTap: () {
+                              _onDestintionClick();
                             },
                             child: Text(
-                              editDestination.length > 30
-                                  ? '${editDestination.substring(0, 30)}...'
-                                  : editDestination,
+                              GlobalVariables.editDestination != null &&
+                                      GlobalVariables
+                                          .editDestination!.isNotEmpty
+                                  ? (GlobalVariables.editDestination!.length >
+                                          30
+                                      ? '${GlobalVariables.editDestination!.substring(0, 30)}...'
+                                      : GlobalVariables.editDestination!)
+                                  : "Edit Destination",
                               style: const TextStyle(
                                 color: kColorButtonPrimary,
-                                fontSize: 14,
-                                fontFamily: 'Kadaw',
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: -0.1,
+                                fontFamily: 'inter',
                                 decoration: TextDecoration.underline,
                                 decorationColor: kColorButtonPrimary,
                               ),
@@ -482,24 +1030,8 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
                           ),
                         ],
                       ),
-                      const Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            miles_traveled,
-                            style: TextStyle(
-                                color: kColorBlack,
-                                fontSize: 14,
-                                fontFamily: 'Kadaw'),
-                          ),
-                          Text(
-                            "0",
-                            style: TextStyle(
-                                color: kColorBlack,
-                                fontSize: 14,
-                                fontFamily: 'Kadaw'),
-                          ),
-                        ],
+                      SizedBox(
+                        height: vh(context, 2),
                       ),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -508,17 +1040,19 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
                             soundtrack,
                             style: TextStyle(
                                 color: kColorBlack,
-                                fontSize: 14,
-                                fontFamily: 'Kadaw'),
+                                fontSize: 13,
+                                letterSpacing: -0.1,
+                                fontWeight: FontWeight.w600,
+                                fontFamily: 'inter'),
                           ),
                           GestureDetector(
                             onTap: () async {
                               final result = await Navigator.push(
                                 context,
                                 PageRouteBuilder(
-                                  pageBuilder: (context, animation1,
-                                          animation2) =>
-                                      SoundScreen(initialSound: initialSound),
+                                  pageBuilder:
+                                      (context, animation1, animation2) =>
+                                          const SoundScreen(),
                                   transitionDuration: Duration.zero,
                                   reverseTransitionDuration: Duration.zero,
                                 ),
@@ -530,13 +1064,15 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
                               }
                             },
                             child: const Text(
-                              edit_playlist,
+                              editplaylist,
                               style: TextStyle(
                                   color: kColorButtonPrimary,
-                                  fontSize: 14,
+                                  fontSize: 13,
+                                  letterSpacing: -0.1,
+                                  fontWeight: FontWeight.w600,
                                   decoration: TextDecoration.underline,
                                   decorationColor: kColorButtonPrimary,
-                                  fontFamily: 'Kadaw'),
+                                  fontFamily: 'inter'),
                             ),
                           ),
                         ],
@@ -544,343 +1080,598 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
                     ],
                   ),
                 ),
-
                 SizedBox(
                   height: vhh(context, 1),
                 ),
-
-                Padding(
-                  padding: EdgeInsets.symmetric(horizontal: vww(context, 4)),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: Colors
-                          .grey[200], // Background color similar to the image
-                      border: Border.all(color: Colors.black), // Black border
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8.0), // Inner padding
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        const Text(
-                          'Caption:',
-                          style: TextStyle(
-                              color: kColorBlack,
-                              fontSize: 14,
-                              fontFamily: 'Kadaw'),
-                        ),
-                        const SizedBox(
-                            width:
-                                8), // Spacing between the label and input field
-                        Expanded(
-                          child: TextField(
-                            controller: _captionController,
-                            decoration: const InputDecoration(
-                              isDense:
-                                  true, // Reduces padding inside the TextField
-                              border: InputBorder
-                                  .none, // Removes default TextField border
-                              hintText:
-                                  '', // Empty hint text for a cleaner look
-                            ),
-                            style: const TextStyle(
+                GestureDetector(
+                  onTap: () {
+                    FocusScope.of(context).unfocus();
+                  },
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: vww(context, 3)),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: kColorStafGrey,
+                        border: Border.all(color: Colors.black),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8.0, vertical: 1.0),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 5),
+                                child: Text(
+                                  'Caption:',
+                                  style: TextStyle(
+                                    color: kColorBlack,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    letterSpacing: -0.1,
+                                    fontFamily: 'inter',
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 4,),
+                              Text(
+                                '$_currentLength/200',
+                                style: const TextStyle(
+                                  fontFamily: 'inter',
+                                  fontSize: 10,
+                                  letterSpacing: -0.1,
+                                  fontWeight: FontWeight.w500,
+                                  color: kColorStrongGrey,
+                                ),
+                              ),
+                            ],
+                          ),
+                          
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextField(
+                              controller: _captionController,
+                              focusNode: _captionFocusNode,
+                              decoration: const InputDecoration(
+                                isDense: true,
+                                border: InputBorder.none,
+                                hintText: '',
+                                counterText: ""
+                              ),
+                              style: const TextStyle(
                                 fontSize: 14,
                                 color: kColorBlack,
-                                fontFamily: 'Kadaw'),
+                                fontFamily: 'inter',
+                              ),
+                              minLines: 2,
+                              maxLines: 2,
+                              maxLength: 200,
+                              textInputAction: TextInputAction.done,
+                              onEditingComplete: () {
+                                _captionFocusNode.unfocus();
+                              },
+                              onChanged: (value) {
+                                GlobalVariables.tripCaption = value;
+                              },
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
 
-                SizedBox(
-                  height: vhh(context, 1),
-                ),
-
                 // MapBox integration with a customized size
-                Padding(
-                  padding: EdgeInsets.symmetric(horizontal: vww(context, 4)),
-                  child: SizedBox(
-                    height: vhh(context, 55),
-                    child: Stack(
-                      children: [
-                        FlutterMap(
-                          mapController: _mapController,
-                          options: MapOptions(
-                            initialCenter: movingLocation ??
-                                staticStartingPoint ??
-                                const LatLng(43.1557, -77.6157),
-                            initialZoom: 15.0,
-                          ),
-                          children: [
-                            TileLayer(
-                              urlTemplate:
-                                  "https://api.mapbox.com/styles/v1/mapbox/streets-v11/tiles/{z}/{x}/{y}?access_token=pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw",
-                              additionalOptions: const {
-                                'access_token':
-                                    'pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw',
-                              },
-                            ),
-                            MarkerLayer(
-                              markers: [
-                                if (movingLocation != null &&
-                                    GlobalVariables.isTripStarted)
-                                  Marker(
-                                    width: 40.0,
-                                    height: 40.0,
-                                    point: movingLocation,
-                                    child: Image.asset(
-                                      'assets/images/icons/car_icon.png',
-                                      width: 40,
-                                      height: 35,
-                                      fit: BoxFit.contain,
-                                    ),
+                !isStateRestored ||
+                        (movingLocation == null && staticStartingPoint == null)
+                    ? const SizedBox.shrink()
+                    : Padding(
+                        padding:
+                            EdgeInsets.symmetric(horizontal: vww(context, 4)),
+                        child: SizedBox(
+                          height: vhh(context, 55),
+                          child: Stack(
+                            children: [
+                              FlutterMap(
+                                mapController: _mapController,
+                                options: MapOptions(
+                                  initialCenter: movingLocation ??
+                                      staticStartingPoint ??
+                                      const LatLng(43.1557, -77.6157),
+                                  initialZoom: 12.0,
+                                ),
+                                children: [
+                                  TileLayer(
+                                    urlTemplate: _mapStyles[
+                                        GlobalVariables.mapStyleSelected],
+                                    additionalOptions: const {
+                                      'access_token':
+                                          'pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw',
+                                    },
                                   ),
-                                if (staticStartingPoint != null)
-                                  Marker(
-                                    width: 80.0,
-                                    height: 80.0,
-                                    point: staticStartingPoint,
-                                    child: const Icon(Icons.location_on,
-                                        color: Colors.red, size: 40),
-                                  ),
-                                // Markers from markersProvider
-                                ...ref.watch(markersProvider).map((markerData) {
-                                  return Marker(
-                                    width: 80.0,
-                                    height: 80.0,
-                                    point: markerData.location,
-                                    child: GestureDetector(
-                                      onTap: () {
-                                        // Display the image in a dialog
-                                        showDialog(
-                                          context: context,
-                                          builder: (context) => AlertDialog(
-                                            content: Column(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                Padding(
-                                                  padding: const EdgeInsets
-                                                      .symmetric(
-                                                      horizontal: 8.0,
-                                                      vertical: 4.0),
-                                                  child: Row(
-                                                    mainAxisAlignment:
-                                                        MainAxisAlignment
-                                                            .spaceBetween,
-                                                    children: [
-                                                      Text(
-                                                        markerData.caption,
-                                                        style: const TextStyle(
-                                                          fontSize: 16,
-                                                          fontWeight:
-                                                              FontWeight.bold,
-                                                          color: Colors.grey,
-                                                          fontFamily: 'Kadaw',
+                                  MarkerLayer(
+                                    markers: [
+                                      ...ref
+                                          .watch(tripMarkersProvider)
+                                          .asMap()
+                                          .entries
+                                          .map((entry) {
+                                        int index = entry.key + 1;
+                                        TripMarkerData markerData = entry.value;
+                                        bool isDelayed = false;
+                                        try {
+                                          final delay = DateTime.parse(
+                                              markerData.delayTime);
+                                          isDelayed =
+                                              delay.isAfter(DateTime.now());
+                                        } catch (_) {
+                                          isDelayed = false;
+                                        }
+                                        return Marker(
+                                          width: 20.0,
+                                          height: 20.0,
+                                          point: markerData.location,
+                                          child: GestureDetector(
+                                            onTap: () {
+                                              showDialog(
+                                                context: context,
+                                                builder: (context) {
+                                                  Duration? delayDuration;
+                                                  String delayText = "";
+                                                  try {
+                                                    final delay =
+                                                        DateTime.parse(
+                                                            markerData
+                                                                .delayTime);
+                                                    final now = DateTime.now();
+                                                    if (delay.isAfter(now)) {
+                                                      delayDuration =
+                                                          delay.difference(now);
+                                                      final hours =
+                                                          delayDuration.inHours;
+                                                      final minutes =
+                                                          delayDuration
+                                                              .inMinutes
+                                                              .remainder(60);
+                                                      delayText =
+                                                          "Will be posted in ";
+                                                      if (hours > 0) {
+                                                        delayText +=
+                                                            "$hours hour${hours > 1 ? 's' : ''}";
+                                                      }
+                                                      if (hours > 0 && minutes > 0) {
+                                                        delayText += " and ";
+                                                      }
+                                                      if (minutes > 0) {
+                                                        delayText +=
+                                                            "$minutes minute${minutes > 1 ? 's' : ''}";
+                                                      }
+                                                    }
+                                                  } catch (_) {
+                                                    delayText = "";
+                                                  }
+
+                                                  return AlertDialog(
+                                                    content: Column(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        Padding(
+                                                          padding: const EdgeInsets.symmetric(horizontal: 0.0, vertical: 12.0), // Increased vertical padding
+                                                          child: SizedBox(
+                                                            height: 40, 
+                                                            child: Row(
+                                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                              children: [
+                                                                Expanded(
+                                                                  child: Text(
+                                                                    (markerData.caption.length) > 20
+                                                                      ? '${markerData.caption.substring(0, 40)}...'
+                                                                      : (markerData.caption),
+                                                                    style: const TextStyle(
+                                                                      fontSize: 16,
+                                                                      fontWeight: FontWeight.bold,
+                                                                      color: Colors.grey,
+                                                                      fontFamily: 'inter',
+                                                                      letterSpacing: -0.1,
+                                                                    ),
+                                                                    overflow: TextOverflow.ellipsis,
+                                                                    maxLines: 1,
+                                                                  ),
+                                                                ),
+                                                                IconButton(
+                                                                  icon: const Icon(Icons.close, color: Colors.black),
+                                                                  onPressed: () {
+                                                                    Navigator.of(context).pop();
+                                                                  },
+                                                                ),
+                                                              ],
+                                                            ),
+                                                          ),
                                                         ),
-                                                      ),
-                                                      IconButton(
-                                                        icon: const Icon(
-                                                            Icons.close,
-                                                            color:
-                                                                Colors.black),
-                                                        onPressed: () {
-                                                          Navigator.of(context)
-                                                              .pop();
-                                                        },
-                                                      ),
-                                                    ],
+                                                        Image.network(
+                                                          markerData.imagePath,
+                                                          fit: BoxFit.cover,
+                                                          loadingBuilder: (context, child, loadingProgress) {
+                                                            if (loadingProgress == null) {
+                                                              return child;
+                                                            } else {
+                                                              return const Center(
+                                                                child:SpinningLoader(),
+                                                              );
+                                                            }
+                                                          },
+                                                          errorBuilder:
+                                                              (context, error, stackTrace) {
+                                                            return const Icon(
+                                                                Icons.broken_image,
+                                                                size: 100);
+                                                          },
+                                                        ),
+                                                        if (delayText.isNotEmpty)
+                                                          Padding(
+                                                            padding:const EdgeInsets.only(top: 8.0),
+                                                            child: Text(
+                                                              delayText,
+                                                              style:const TextStyle(
+                                                                fontSize: 14,
+                                                                fontWeight:FontWeight.w600,
+                                                                color: Colors.redAccent,
+                                                                fontFamily:
+                                                                    'inter',
+                                                              ),
+                                                            ),
+                                                          ),
+                                                      ],
+                                                    ),
+                                                  );
+                                                },
+                                              );
+                                            },
+                                            child: Opacity(
+                                              opacity: isDelayed ? 0.5 : 1.0,
+                                              child: Container(
+                                                width: 10,
+                                                height: 10,
+                                                decoration: BoxDecoration(
+                                                  shape: BoxShape.circle,
+                                                  color: Colors.white,
+                                                  border: Border.all(
+                                                      color: Colors.black,
+                                                      width: 2),
+                                                ),
+                                                alignment: Alignment.center,
+                                                child: Text(
+                                                  index.toString(),
+                                                  style: const TextStyle(
+                                                    fontSize: 13,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: Colors.black,
                                                   ),
                                                 ),
-                                                Image.network(
-                                                  markerData.imagePath,
-                                                  fit: BoxFit.cover,
-                                                  loadingBuilder: (context,
-                                                      child, loadingProgress) {
-                                                    if (loadingProgress ==
-                                                        null) {
-                                                      // Image has loaded successfully
-                                                      return child;
-                                                    } else {
-                                                      // Display a loading indicator while the image is loading
-                                                      return Center(
-                                                        child:
-                                                            CircularProgressIndicator(
-                                                          value: loadingProgress
-                                                                      .expectedTotalBytes !=
-                                                                  null
-                                                              ? loadingProgress
-                                                                      .cumulativeBytesLoaded /
-                                                                  (loadingProgress
-                                                                          .expectedTotalBytes ??
-                                                                      1)
-                                                              : null, // Show progress if available
-                                                        ),
-                                                      );
-                                                    }
-                                                  },
-                                                  errorBuilder: (context, error,
-                                                      stackTrace) {
-                                                    // Fallback widget in case of an error
-                                                    return const Icon(
-                                                        Icons.broken_image,
-                                                        size: 100);
-                                                  },
-                                                ),
-                                              ],
+                                              ),
                                             ),
                                           ),
                                         );
-                                      },
-                                      child: const Icon(
-                                        Icons.location_on,
-                                        color: Colors
-                                            .blue, // Blue for additional markers
-                                        size: 40,
-                                      ),
-                                    ),
-                                  );
-                                }),
-                              ],
-                            ),
-                            PolylineLayer(polylines: [
-                              Polyline(
-                                  points: pathCoordinates,
-                                  strokeWidth: 4.0,
-                                  color: Colors.blue)
-                            ]),
-                          ],
-                        ),
+                                      }),
 
-                        GlobalVariables.isTripStarted
-                            ? Positioned(
-                                top: 1,
+                                      // Future delay label markers
+                                      ...ref
+                                          .watch(futureMarkersProvider)
+                                          .map((futureMarker) {
+                                        return Marker(
+                                          point: futureMarker.location,
+                                          width: 150,
+                                          height: 20,
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 2, vertical: 0),
+                                            decoration: BoxDecoration(
+                                              color: Colors.grey
+                                                  .withValues(alpha: 0.5),
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: Colors.black
+                                                      .withValues(alpha: 0.3),
+                                                  blurRadius: 4,
+                                                  offset: const Offset(2, 2),
+                                                ),
+                                              ],
+                                            ),
+                                            child: Center(
+                                              child: Text(
+                                                futureMarker.label,
+                                                style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 10,
+                                                    fontFamily: 'inter'),
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      }),
+                                    ],
+                                  ),
+                                  // MarkerLayer(
+                                  //   markers: [
+                                  //     ...ref
+                                  //         .watch(markersProvider)
+                                  //         .asMap()
+                                  //         .entries
+                                  //         .map((entry) {
+                                  //       int index = entry.key + 1;
+                                  //       MarkerData markerData = entry.value;
+                                  //       return Marker(
+                                  //         width: 20.0,
+                                  //         height: 20.0,
+                                  //         point: markerData.location,
+                                  //         child: GestureDetector(
+                                  //           onTap: () {
+                                  //             showDialog(
+                                  //               context: context,
+                                  //               builder: (context) => AlertDialog(
+                                  //                 content: Column(
+                                  //                   mainAxisSize: MainAxisSize.min,
+                                  //                   children: [
+                                  //                     Padding(
+                                  //                       padding: const EdgeInsets.symmetric(
+                                  //                         horizontal: 8.0,
+                                  //                         vertical: 4.0
+                                  //                       ),
+                                  //                       child: Row(
+                                  //                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  //                         children: [
+                                  //                           Text(
+                                  //                             markerData.caption,
+                                  //                             style: const TextStyle(
+                                  //                               fontSize: 16,
+                                  //                               fontWeight:FontWeight.bold,
+                                  //                               color: Colors.grey,
+                                  //                               fontFamily: 'inter',
+                                  //                             ),
+                                  //                           ),
+                                  //                           IconButton(
+                                  //                             icon: const Icon(
+                                  //                               Icons.close,
+                                  //                               color: Colors.black),
+                                  //                             onPressed: () {
+                                  //                               Navigator.of(context).pop();
+                                  //                             },
+                                  //                           ),
+                                  //                         ],
+                                  //                       ),
+                                  //                     ),
+                                  //                     Image.network(
+                                  //                       markerData.imagePath,
+                                  //                       fit: BoxFit.cover,
+                                  //                       loadingBuilder: (context,
+                                  //                           child,
+                                  //                           loadingProgress) {
+                                  //                         if (loadingProgress ==
+                                  //                             null) {
+                                  //                           return child;
+                                  //                         } else {
+                                  //                           return const Center(
+                                  //                             child:SpinningLoader(),
+                                  //                           );
+                                  //                         }
+                                  //                       },
+                                  //                       errorBuilder: (context,error, stackTrace) {
+                                  //                         return const Icon(
+                                  //                           Icons.broken_image,
+                                  //                           size: 100
+                                  //                         );
+                                  //                       },
+                                  //                     ),
+                                  //                   ],
+                                  //                 ),
+                                  //               ),
+                                  //             );
+                                  //           },
+                                  //           child: Container(
+                                  //             width: 10,
+                                  //             height: 10,
+                                  //             decoration: BoxDecoration(
+                                  //               shape: BoxShape.circle,
+                                  //               color: Colors.white,
+                                  //               border: Border.all(
+                                  //                 color: Colors.black,
+                                  //                 width: 2
+                                  //               ),
+                                  //             ),
+                                  //             alignment: Alignment.center,
+                                  //             child: Text(
+                                  //               index.toString(),
+                                  //               style: const TextStyle(
+                                  //                 fontSize: 13,
+                                  //                 fontWeight: FontWeight.bold,
+                                  //                 color: Colors.black,
+                                  //               ),
+                                  //             ),
+                                  //           ),
+                                  //         ),
+                                  //       );
+                                  //     }),
+                                  //   ],
+                                  // ),
+                                  PolylineLayer(polylines: [
+                                    Polyline(
+                                        points: pathCoordinates,
+                                        strokeWidth: 4.0,
+                                        color: Colors.blue)
+                                  ]),
+                                ],
+                              ),
+
+                              GlobalVariables.isTripStarted
+                                  ? Positioned(
+                                      top: 1,
+                                      left: 0,
+                                      right: 0,
+                                      child: Padding(
+                                        padding:
+                                            EdgeInsets.zero, // Adjust for width
+                                        child: Container(
+                                          padding: const EdgeInsets.all(3.0),
+                                          // ignore: deprecated_member_use
+                                          color: Colors.white.withOpacity(0.5),
+                                          child: const Column(
+                                            children: [
+                                              Text(
+                                                'Trip in progress',
+                                                style: TextStyle(
+                                                    color: Colors.black,
+                                                    fontSize: 14,
+                                                    fontStyle: FontStyle.italic,
+                                                    fontFamily: 'interBold'),
+                                                textAlign: TextAlign.center,
+                                              ),
+                                              Text(
+                                                'Drop a pin to post your map',
+                                                style: TextStyle(
+                                                    color: Colors.black,
+                                                    fontSize: 14,
+                                                    fontStyle: FontStyle.italic,
+                                                    fontFamily: 'inter'),
+                                                textAlign: TextAlign.center,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    )
+                                  : const SizedBox(),
+
+                              // Zoom in/out buttons
+                              Positioned(
+                                right: 10,
+                                top: 70,
+                                child: Column(
+                                  children: [
+                                    FloatingActionButton(
+                                      heroTag:
+                                          'zoom_in_button_starttrip_1', // Unique tag for the zoom in button
+                                      onPressed: () {
+                                        _mapController.move(
+                                          _mapController.camera.center,
+                                          _mapController.camera.zoom + 1,
+                                        );
+                                      },
+                                      mini: true,
+                                      child: const Icon(Icons.zoom_in),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    FloatingActionButton(
+                                      heroTag:
+                                          'zoom_out_button_starttrip_2', // Unique tag for the zoom out button
+                                      onPressed: () {
+                                        _mapController.move(
+                                          _mapController.camera.center,
+                                          _mapController.camera.zoom - 1,
+                                        );
+                                      },
+                                      mini: true,
+                                      child: const Icon(Icons.zoom_out),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              Positioned(
+                                bottom: 70,
+                                left: 0,
+                                right: 0,
+                                child: Center(
+                                  child: Padding(
+                                    padding: EdgeInsets.only(
+                                      left: vww(context, 7),
+                                      right: vww(context, 7),
+                                      top: vhh(context, 3),
+                                    ),
+                                    child: Consumer(
+                                      builder: (context, ref, _) {
+                                        final isTripStarted = ref.watch(isTripStartedProvider);
+
+                                        return Row(
+                                          children: [
+                                            Expanded(
+                                              child: ButtonWidget(
+                                                btnType: isTripStarted
+                                                    ? ButtonWidgetType.endTripTitle   // "End Trip"
+                                                    : ButtonWidgetType.startTripTitle, // "Start Trip"
+                                                borderColor:
+                                                    isTripStarted ? Colors.red : kColorButtonPrimary,
+                                                textColor: kColorWhite,
+                                                fullColor:
+                                                    isTripStarted ? Colors.red : kColorButtonPrimary,
+                                                onPressed: toggleTrip,
+                                              ),
+                                            ),
+
+                                            const SizedBox(width: 30),
+
+                                            // Drop Pin button
+                                            Expanded(
+                                              child: IgnorePointer(
+                                                ignoring: !isTripStarted, // block taps when false
+                                                child: ButtonWidget(
+                                                  btnType: ButtonWidgetType.dropPinTitle,
+                                                  borderColor: isTripStarted
+                                                      ? const Color(0xFF4DC4FF)
+                                                      : const Color(0xFFBDBDBD),
+                                                  fullColor: isTripStarted
+                                                      ? const Color(0xFF4DC4FF)
+                                                      : const Color(0xFFBDBDBD),
+                                                  textColor: Colors.white,
+                                                  onPressed: isTripStarted
+                                                      ? droppinClicked
+                                                      : () {}, 
+                                                ),
+                                              ),
+                                            ),
+
+                                          ],
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                ),
+                              ),
+
+
+                              Positioned(
+                                bottom: 13,
                                 left: 0,
                                 right: 0,
                                 child: Padding(
                                   padding: EdgeInsets.zero, // Adjust for width
                                   child: Container(
-                                    padding: const EdgeInsets.all(3.0),
-                                    color: Colors.white.withOpacity(0.5),
-                                    child: const Column(
-                                      children: [
-                                        Text(
-                                          'Trip in progress',
-                                          style: TextStyle(
-                                              color: Colors.black,
-                                              fontSize: 14,
-                                              fontStyle: FontStyle.italic,
-                                              fontFamily: 'KadawBold'),
-                                          textAlign: TextAlign.center,
-                                        ),
-                                        Text(
-                                          'Drop a pin to post your map',
-                                          style: TextStyle(
-                                              color: Colors.black,
-                                              fontSize: 14,
-                                              fontStyle: FontStyle.italic,
-                                              fontFamily: 'Kadaw'),
-                                          textAlign: TextAlign.center,
-                                        ),
-                                      ],
+                                    padding: const EdgeInsets.all(
+                                        3.0), // Inner padding for spacing around text
+                                    color: Colors.white.withAlpha(
+                                        128), // Background color with slight transparency
+                                    child: const Text(
+                                      'Note: Start trip, then drop a pin to make\nyour post visible to your followers',
+                                      style: TextStyle(
+                                        color: Colors.black,
+                                        fontSize: 14,
+                                        fontStyle: FontStyle.italic,
+                                        fontFamily: 'inter',
+                                      ),
+                                      textAlign: TextAlign.center,
                                     ),
                                   ),
                                 ),
-                              )
-                            : const SizedBox(),
-
-                        // Zoom in/out buttons
-                        Positioned(
-                          right: 10,
-                          top: 70,
-                          child: Column(
-                            children: [
-                              FloatingActionButton(
-                                heroTag:
-                                    'zoom_in_button_starttrip_1', // Unique tag for the zoom in button
-                                onPressed: () {
-                                  _mapController.move(
-                                    _mapController.camera.center,
-                                    _mapController.camera.zoom + 1,
-                                  );
-                                },
-                                mini: true,
-                                child: const Icon(Icons.zoom_in),
-                              ),
-                              const SizedBox(height: 8),
-                              FloatingActionButton(
-                                heroTag:
-                                    'zoom_out_button_starttrip_2', // Unique tag for the zoom out button
-                                onPressed: () {
-                                  _mapController.move(
-                                    _mapController.camera.center,
-                                    _mapController.camera.zoom - 1,
-                                  );
-                                },
-                                mini: true,
-                                child: const Icon(Icons.zoom_out),
                               ),
                             ],
                           ),
                         ),
-
-                        // Button overlay
-                        Positioned(
-                          bottom: 70,
-                          left: 0,
-                          right: 0,
-                          child: Center(
-                            child: Padding(
-                              padding: EdgeInsets.only(
-                                  left: vww(context, 15),
-                                  right: vww(context, 15),
-                                  top: vhh(context, 3)),
-                              child: ButtonWidget(
-                                btnType: GlobalVariables.isTripStarted
-                                    ? ButtonWidgetType.endTripTitle
-                                    : ButtonWidgetType.startTripTitle,
-                                borderColor: GlobalVariables.isTripStarted
-                                    ? Colors.red
-                                    : kColorButtonPrimary,
-                                textColor: kColorWhite,
-                                fullColor: GlobalVariables.isTripStarted
-                                    ? Colors.red
-                                    : kColorButtonPrimary,
-                                onPressed: toggleTrip,
-                              ),
-                            ),
-                          ),
-                        ),
-
-                        Positioned(
-                          bottom: 5,
-                          left: 0,
-                          right: 0,
-                          child: Padding(
-                            padding: EdgeInsets.zero, // Adjust for width
-                            child: Container(
-                              padding: const EdgeInsets.all(
-                                  3.0), // Inner padding for spacing around text
-                              color: Colors.white.withOpacity(
-                                  0.5), // Background color with slight transparency
-                              child: const Text(
-                                'Note: Start trip, then drop a pin to make\nyour post visible to your followers',
-                                style: TextStyle(
-                                  color: Colors.black,
-                                  fontSize: 14,
-                                  fontStyle: FontStyle.italic,
-                                  fontFamily: 'Kadaw',
-                                ),
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+                      ),
               ],
             ),
           ),
@@ -890,3 +1681,12 @@ class _StartTripScreenState extends ConsumerState<StartTripScreen> {
     );
   }
 }
+
+class MarkerDataWithDelayLabel {
+  final LatLng location;
+  final String label;
+  MarkerDataWithDelayLabel({required this.location, required this.label});
+}
+
+final futureMarkersProvider =
+    StateProvider<List<MarkerDataWithDelayLabel>>((ref) => []);

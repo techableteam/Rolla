@@ -1,8 +1,15 @@
+import 'dart:io';
+import 'dart:ui';
+import 'dart:ui' as ui;
+import 'package:RollaTravel/src/screen/home/home_sound_screen.dart';
+// import 'package:RollaTravel/src/screen/trip/sound_screen.dart';
 import 'package:RollaTravel/src/screen/trip/start_trip.dart';
-import 'package:RollaTravel/src/services/api_service.dart';
 import 'package:RollaTravel/src/utils/global_variable.dart';
-import 'package:RollaTravel/src/utils/stop_marker_provider.dart';
+import 'package:RollaTravel/src/utils/spinner_loader.dart';
+import 'package:RollaTravel/src/utils/trip_marker_provider.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:RollaTravel/src/utils/index.dart';
 import 'package:RollaTravel/src/constants/app_styles.dart';
@@ -11,26 +18,27 @@ import 'package:logger/logger.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:RollaTravel/src/widget/bottombar.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 class EndTripScreen extends ConsumerStatefulWidget {
   final LatLng? startLocation;
   final LatLng? endLocation;
-  final List<MarkerData> stopMarkers;
+  final List<TripMarkerData> stopMarkers;
   final String tripStartDate;
   final String tripEndDate;
-  final String tripDistance;
-  const EndTripScreen({
-    super.key,
-    required this.startLocation,
-    required this.endLocation,
-    required this.stopMarkers,
-    required this.tripStartDate,
-    required this.tripEndDate,
-    required this.tripDistance,
-  });
+  final String endDestination;
+  final String tripSound;
 
+  const EndTripScreen(
+      {super.key,
+      required this.startLocation,
+      required this.endLocation,
+      required this.stopMarkers,
+      required this.tripStartDate,
+      required this.tripEndDate,
+      required this.endDestination,
+      required this.tripSound});
   @override
   ConsumerState<EndTripScreen> createState() => _EndTripScreenState();
 }
@@ -42,19 +50,17 @@ class _EndTripScreenState extends ConsumerState<EndTripScreen> {
   final Logger logger = Logger();
   final MapController _mapController = MapController();
   double totalDistanceInMeters = 0;
-
   String? startAddress;
   String? endAddress;
   String stopAddressesString = "";
   List<String> formattedStopAddresses = [];
   List<Map<String, dynamic>> droppins = [];
-
+  final GlobalKey mapKey = GlobalKey();
+  final GlobalKey _shareWidgetKey = GlobalKey();
+  bool _isSharing = false;
   @override
   void initState() {
     super.initState();
-    _fetchAddresses();
-    // _fetchRoute();
-    _fetchDropPins();
   }
 
   @override
@@ -63,228 +69,172 @@ class _EndTripScreenState extends ConsumerState<EndTripScreen> {
     _mapController.dispose();
   }
 
-  Future<void> _fetchDropPins() async {
-    // Convert the list of MarkerData to the desired format
-    droppins = widget.stopMarkers.asMap().entries.map((entry) {
-      final int index = entry.key + 1; // stop_index starts from 1
-      final MarkerData marker = entry.value;
+  // String _generateStaticMapUrl() {
+  //   const accessToken = 'pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw';
+  //   final List<String> points = widget.stopMarkers
+  //       .map((m) => '${m.location.longitude},${m.location.latitude}')
+  //       .toList();
 
-      return {
-        "stop_index": index,
-        "image_path": marker.imagePath,
-        "image_caption": marker.caption,
-      };
-    }).toList();
+  //   final pathOverlay = points.isNotEmpty
+  //       ? 'path-5+0000ff-1(${points.join(";")})/'
+  //       : '';
 
-    // Log the formatted droppins
-    logger.i("Droppins: $droppins");
-  }
+  //   final center = widget.endLocation!;
+  //   return 'https://api.mapbox.com/styles/v1/mapbox/streets-v11/static/'
+  //       '$pathOverlay${center.longitude},${center.latitude},10,0/600x400'
+  //       '?access_token=$accessToken';
+  // }
 
-  Future<void> _fetchAddresses() async {
-    if (widget.startLocation != null) {
-      startAddress = await getAddressFromLocation(widget.startLocation!);
-      logger.i("startAddress : $startAddress");
-    }
+  Future<void> _onShareClicked() async {
+    if (_isSharing) return;
+    
+    setState(() => _isSharing = true);
+    
+    try {
+      // Ensure widget is mounted and ready
+      if (!mounted) return;
+      await Future.delayed(const Duration(milliseconds: 50)); // Small delay for rendering
 
-    if (widget.endLocation != null) {
-      endAddress = await getAddressFromLocation(widget.endLocation!);
-      logger.i("endAddress : $endAddress");
-    }
+      // Get the boundary
+      final boundaryContext = _shareWidgetKey.currentContext;
+      if (boundaryContext == null || !boundaryContext.mounted) {
+        _showErrorDialog("Widget not ready for sharing.");
+        return;
+      }
 
-    if (widget.stopMarkers != []) {
-      List<String?> stopMarkerAddresses = await Future.wait(
-        widget.stopMarkers.map((marker) async {
-          try {
-            final address = await getAddressFromLocation(marker.location);
-            return address ?? "";
-          } catch (e) {
-            logger.e(
-                "Error fetching address for marker at ${marker.location}: $e");
-            return "";
-          }
-        }),
+      // Wait for the next frame to ensure rendering is complete
+      await WidgetsBinding.instance.endOfFrame;
+      await Future.delayed(const Duration(milliseconds: 300));
+
+      // ignore: use_build_context_synchronously
+      final boundary = boundaryContext.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) {
+        _showErrorDialog("Unable to capture content.");
+        return;
+      }
+
+      // Convert to image with error handling
+      ui.Image originalImage;
+      try {
+        originalImage = await boundary.toImage(pixelRatio: 3.0);
+      } catch (e) {
+        logger.e("Image capture error: $e");
+        _showErrorDialog("Failed to capture image.");
+        return;
+      }
+      final width = originalImage.width.toDouble();
+      final height = originalImage.height.toDouble();
+
+      // Create canvas with rounded clipping
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+
+      final rrect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(0, 0, width, height),
+        const Radius.circular(60), // same as your UI
       );
 
-      // Format the list as JSON-like array
-      formattedStopAddresses =
-          stopMarkerAddresses.map((address) => '"$address"').toList();
-      stopAddressesString = '[${formattedStopAddresses.join(', ')}]';
-    }
-  }
+      canvas.clipRRect(rrect);
+      canvas.drawImage(originalImage, Offset.zero, Paint());
 
-  Future<String?> getAddressFromLocation(LatLng location) async {
-    const String accessToken =
-        "pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw";
-    final String url =
-        "https://api.mapbox.com/geocoding/v5/mapbox.places/${location.longitude},${location.latitude}.json?access_token=$accessToken";
+      final clippedImage = await recorder
+          .endRecording()
+          .toImage(originalImage.width, originalImage.height);
 
-    try {
-      final response = await http.get(Uri.parse(url));
-      if (response.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(response.body);
-        if (data['features'].isNotEmpty) {
-          // Return the first result's place name
-          return data['features'][0]['place_name'];
-        } else {
-          return "Address not found";
-        }
-      } else {
-        return "Error: ${response.statusCode}";
+      final pngBytes = await clippedImage.toByteData(format: ui.ImageByteFormat.png);
+      if (pngBytes == null) {
+        _showErrorDialog("Failed to encode image.");
+        return;
       }
-    } catch (e) {
-      return "Error: $e";
+
+      // Save to file
+      final tempDir = await getTemporaryDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final filePath = '${tempDir.path}/rolla_share_$timestamp.png';
+      final file = File(filePath);
+      
+      try {
+        await file.writeAsBytes(pngBytes.buffer.asUint8List());
+        if (!(await file.exists())) {
+          _showErrorDialog("File not saved.");
+          return;
+        }
+      } catch (e) {
+        logger.e("File write error: $e");
+        _showErrorDialog("Failed to save image.");
+        return;
+      }
+
+      // Share the file with platform-specific handling
+      try {
+        await Share.shareXFiles(
+          [XFile(file.path)],
+          subject: 'Posted on the Rolla travel app',
+          // text: 'I just created a trip with Rolla Travel!',
+        );
+        logger.i("Share successful");
+      } on PlatformException catch (e) {
+        logger.e("Platform sharing error: ${e.message}");
+        _showErrorDialog("Sharing failed: ${e.message ?? 'Unknown error'}");
+      } catch (e) {
+        logger.e("General sharing error: $e");
+        _showErrorDialog("Sharing failed: ${e.toString().replaceAll('Exception: ', '')}");
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSharing = false);
+      }
     }
   }
 
-  // Future<void> _fetchRoute() async {
-  //   // Retrieve starting point and moving location
-  //   final staticStartingPoint = widget.startLocation;
-  //   final movingLocation = widget.endLocation;
-
-  //   // Retrieve waypoints from markersProvider
-  //   final markers = widget.stopMarkers;
-  //   final waypoints = markers.map((marker) => marker.location).toList();
-
-  //   if (staticStartingPoint == null || movingLocation == null) {
-  //     logger.i("Starting point or moving location is missing");
-  //     return;
-  //   }
-
-  //   // Construct waypoints for the Mapbox Directions API
-  //   final waypointString = waypoints
-  //       .map((waypoint) => "${waypoint.longitude},${waypoint.latitude}")
-  //       .join(";");
-  //   final url =
-  //       'https://api.mapbox.com/directions/v5/mapbox/driving/${staticStartingPoint.longitude},${staticStartingPoint.latitude};$waypointString;${movingLocation.longitude},${movingLocation.latitude}?geometries=polyline6&access_token=pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw';
-
-  //   try {
-  //     final response = await http.get(Uri.parse(url));
-  //     if (response.statusCode == 200) {
-  //       final jsonResponse = jsonDecode(response.body);
-  //       final List<dynamic> routes = jsonResponse['routes'];
-
-  //       if (routes.isNotEmpty) {
-  //         final String polyline = routes[0]['geometry'];
-  //         final List<LatLng> decodedPolyline = _decodePolyline6(polyline);
-  //         final double distanceInMeters = routes[0]['distance'];
-  //         final double totalDistanceInMiles = distanceInMeters / 1609.34;
-
-  //         setState(() {
-  //           _pathCoordinates = decodedPolyline;
-  //           totalDistanceInMeters = totalDistanceInMiles;
-  //         });
-  //       } else {
-  //         logger.i("No routes found");
-  //       }
-  //     } else {
-  //       logger.i("Error fetching route: ${response.statusCode}");
-  //     }
-  //   } catch (e) {
-  //     logger.i("Error fetching route: $e");
-  //   }
-  // }
-
-  // List<LatLng> _decodePolyline6(String encoded) {
-  //   List<LatLng> polyline = [];
-  //   int index = 0, len = encoded.length;
-  //   int lat = 0, lng = 0;
-
-  //   while (index < len) {
-  //     int b, shift = 0, result = 0;
-  //     do {
-  //       b = encoded.codeUnitAt(index++) - 63;
-  //       result |= (b & 0x1f) << shift;
-  //       shift += 5;
-  //     } while (b >= 0x20);
-  //     int deltaLat = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
-  //     lat += deltaLat;
-
-  //     shift = 0;
-  //     result = 0;
-  //     do {
-  //       b = encoded.codeUnitAt(index++) - 63;
-  //       result |= (b & 0x1f) << shift;
-  //       shift += 5;
-  //     } while (b >= 0x20);
-  //     int deltaLng = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
-  //     lng += deltaLng;
-
-  //     polyline.add(LatLng(lat / 1E6, lng / 1E6));
-  //   }
-  //   return polyline;
-  // }
-
-  Future<bool> _onWillPop() async {
-    return false;
-  }
-
-  Future<void> sendTripData() async {
-    final apiserice = ApiService();
-
-    // Convert pathCoordinates to List<Map<String, double>>
-    final tripCoordinates = ref
-        .read(pathCoordinatesProvider)
-        .map((latLng) => {
-              'latitude': latLng.latitude,
-              'longitude': latLng.longitude,
-            })
-        .toList();
-
-    final stopLocations = widget.stopMarkers
-        .map((marker) => {
-              'latitude': marker.location.latitude,
-              'longitude': marker.location.longitude,
-            })
-        .toList();
-
-    logger.i("stopLocations: $stopLocations");
-
-    final response = await apiserice.createTrip(
-        userId: GlobalVariables.userId!,
-        startAddress: startAddress!,
-        stopAddresses: stopAddressesString,
-        destinationAddress: endAddress!,
-        tripStartDate: widget.tripStartDate,
-        tripEndDate: widget.tripEndDate,
-        tripMiles: widget.tripDistance,
-        tripSound: "tripSound",
-        stopLocations: stopLocations,
-        tripCoordinates: tripCoordinates, // Use the converted list
-        droppins: droppins);
-
+  void _showErrorDialog(String message) {
     if (!mounted) return;
 
-    if (response) {
-      // Navigate to the next page
-      Navigator.pushReplacement(
-        context,
-        PageRouteBuilder(
-          pageBuilder: (context, animation1, animation2) =>
-              const StartTripScreen(),
-          transitionDuration: Duration.zero,
-          reverseTransitionDuration: Duration.zero,
-        ),
-      );
-      ref.read(pathCoordinatesProvider.notifier).state = [];
-    } else {
-      // Show an alert dialog
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Sharing Failed"),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _playListClicked () {
+    if (widget.tripSound == "tripSound") {
+      // Show an alert
       showDialog(
         context: context,
         builder: (BuildContext context) {
           return AlertDialog(
-            title: const Text("Error"),
-            content: const Text("Failed to create the trip. Please try again."),
-            actions: [
+            title: const Text("No playlist"),
+            content: const Text("There is no playlist available for this trip."),
+            actions: <Widget>[
               TextButton(
-                child: const Text("OK"),
                 onPressed: () {
-                  ref.read(pathCoordinatesProvider.notifier).state = [];
-                  Navigator.of(context).pop(); // Close the dialog
+                  // Close the dialog
+                  Navigator.pop(context);
                 },
+                child: const Text("OK",
+                style: TextStyle(color: kColorStrongGrey),),
               ),
             ],
           );
         },
+      );
+    } else {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => HomeSoundScreen(
+            tripSound: widget.tripSound,
+          ),
+        ),
       );
     }
   }
@@ -292,388 +242,432 @@ class _EndTripScreenState extends ConsumerState<EndTripScreen> {
   @override
   Widget build(BuildContext context) {
     final pathCoordinates = ref.watch(pathCoordinatesProvider);
-
     return Scaffold(
-      body: WillPopScope(
-        onWillPop: _onWillPop,
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              SizedBox(
-                height: vhh(context, 5),
-              ),
-              Container(
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  border: Border.all(color: Colors.grey, width: 1.5),
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.white.withOpacity(0.9),
-                      spreadRadius: -5,
-                      blurRadius: 15,
-                      offset: const Offset(0, 5),
-                    ),
-                  ],
-                ),
+      backgroundColor: kColorWhite,
+      body: PopScope(
+          canPop: !_isSharing, 
+          onPopInvokedWithResult: (didPop, result) {
+            if (didPop) return;
+            if (_isSharing) {
+              _showErrorDialog("Please wait while sharing completes");
+            }
+          },
+          child: SizedBox.expand(
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 0.0),
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Stack(
-                      children: [
-                        Center(
-                          child: GestureDetector(
-                            onTap: () {
-                              // Handle tap on the logo if needed
-                            },
-                            child: Image.asset(
-                              'assets/images/icons/logo.png', // Replace with your logo asset path
-                              height: vh(context, 13),
-                            ),
-                          ),
-                        ),
-                        Positioned(
-                          right: 0,
-                          top: 10,
-                          child: IconButton(
-                            icon: const Icon(Icons.close,
-                                color: Colors.black, size: 28),
-                            onPressed: () {
-                              ref.read(pathCoordinatesProvider.notifier).state =
-                                  [];
-                              Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                      builder: (context) =>
-                                          const StartTripScreen()));
-                            },
-                          ),
-                        ),
-                      ],
+                    SizedBox(
+                      height: vhh(context, 6),
                     ),
-                    const Padding(
-                      padding: EdgeInsets.symmetric(
-                          horizontal: 10.0), // Adjust the value as needed
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            destination,
-                            style: TextStyle(
-                                color: kColorBlack,
-                                fontSize: 14,
-                                fontFamily: 'Kadaw'),
-                          ),
-                          Text(
-                            edit_destination,
-                            style: TextStyle(
-                                color: kColorButtonPrimary,
-                                fontSize: 14,
-                                decoration: TextDecoration.underline,
-                                decorationColor: kColorButtonPrimary,
-                                fontFamily: 'Kadaw'),
-                          ),
-                        ],
-                      ),
-                    ),
-
                     Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10.0), // Adjust the value as needed
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            miles_traveled,
-                            style: TextStyle(
-                                color: kColorBlack,
-                                fontSize: 14,
-                                fontFamily: 'Kadaw'),
-                          ),
-                          Text(
-                            totalDistanceInMeters.toStringAsFixed(3),
-                            style: const TextStyle(
-                                color: kColorBlack,
-                                fontSize: 14,
-                                fontFamily: 'Kadaw'),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    const Padding(
-                      padding: EdgeInsets.symmetric(
-                          horizontal: 10.0), // Adjust the value as needed
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            soundtrack,
-                            style: TextStyle(
-                                color: kColorBlack,
-                                fontSize: 14,
-                                fontFamily: 'Kadaw'),
-                          ),
-                          Text(
-                            edit_playlist,
-                            style: TextStyle(
-                                color: kColorButtonPrimary,
-                                fontSize: 14,
-                                decoration: TextDecoration.underline,
-                                decorationColor: kColorButtonPrimary,
-                                fontFamily: 'Kadaw'),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    const SizedBox(height: 20),
-
-                    // Map Image
-                    Padding(
-                      padding:
-                          EdgeInsets.symmetric(horizontal: vww(context, 4)),
-                      child: SizedBox(
-                        height: vhh(context, 30),
-                        child: Stack(
-                          children: [
-                            FlutterMap(
-                              mapController: _mapController,
-                              options: MapOptions(
-                                initialCenter: widget.startLocation!,
-                                initialZoom: 16.0,
+                      padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(20),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.grey.withValues(alpha: 0.9),
+                                spreadRadius: 1.5,
+                                blurRadius: 15,
+                                offset: const Offset(0, 0),
                               ),
-                              children: [
-                                TileLayer(
-                                  urlTemplate:
-                                      "https://api.mapbox.com/styles/v1/mapbox/streets-v11/tiles/{z}/{x}/{y}?access_token=pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw",
-                                  additionalOptions: const {
-                                    'access_token':
-                                        'pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw',
-                                  },
-                                ),
-                                if (pathCoordinates.isNotEmpty)
-                                  PolylineLayer(
-                                    polylines: [
-                                      Polyline(
-                                        points: pathCoordinates,
-                                        strokeWidth: 4.0,
-                                        color: Colors.blue,
-                                      ),
-                                    ],
-                                  ),
-                                MarkerLayer(
-                                  markers: [
-                                    if (widget.startLocation != null)
-                                      Marker(
-                                        width: 80.0,
-                                        height: 80.0,
-                                        point: widget.startLocation!,
-                                        child: const Icon(Icons.location_on,
-                                            color: Colors.red, size: 40),
-                                      ),
-                                    if (widget.endLocation != null)
-                                      Marker(
-                                        width: 80.0,
-                                        height: 80.0,
-                                        point: widget.endLocation!,
-                                        child: const Icon(Icons.location_on,
-                                            color: Colors.green, size: 40),
-                                      ),
-                                    if (widget.stopMarkers.isNotEmpty)
-                                      ...widget.stopMarkers.map((markerData) {
-                                        return Marker(
-                                          width: 80.0,
-                                          height: 80.0,
-                                          point: markerData.location,
-                                          child: GestureDetector(
-                                            onTap: () {
-                                              // Display the image in a dialog
-                                              showDialog(
-                                                context: context,
-                                                builder: (context) =>
-                                                    AlertDialog(
-                                                  content: Column(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      Padding(
-                                                        padding:
-                                                            const EdgeInsets
-                                                                .symmetric(
-                                                                horizontal: 8.0,
-                                                                vertical: 4.0),
-                                                        child: Row(
-                                                          mainAxisAlignment:
-                                                              MainAxisAlignment
-                                                                  .spaceBetween,
-                                                          children: [
-                                                            Text(
-                                                              markerData
-                                                                  .caption,
-                                                              style:
-                                                                  const TextStyle(
-                                                                fontSize: 16,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .bold,
-                                                                color:
-                                                                    Colors.grey,
-                                                                fontFamily:
-                                                                    'Kadaw',
-                                                              ),
-                                                            ),
-                                                            IconButton(
-                                                              icon: const Icon(
-                                                                  Icons.close,
-                                                                  color: Colors
-                                                                      .black),
-                                                              onPressed: () {
-                                                                Navigator.of(
-                                                                        context)
-                                                                    .pop();
-                                                              },
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      ),
-                                                      Image.network(
-                                                        markerData.imagePath,
-                                                        fit: BoxFit.cover,
-                                                        loadingBuilder: (context,
-                                                            child,
-                                                            loadingProgress) {
-                                                          if (loadingProgress ==
-                                                              null) {
-                                                            // Image has loaded successfully
-                                                            return child;
-                                                          } else {
-                                                            // Display a loading indicator while the image is loading
-                                                            return Center(
-                                                              child:
-                                                                  CircularProgressIndicator(
-                                                                value: loadingProgress
-                                                                            .expectedTotalBytes !=
-                                                                        null
-                                                                    ? loadingProgress
-                                                                            .cumulativeBytesLoaded /
-                                                                        (loadingProgress.expectedTotalBytes ??
-                                                                            1)
-                                                                    : null, // Show progress if available
-                                                              ),
-                                                            );
-                                                          }
-                                                        },
-                                                        errorBuilder: (context,
-                                                            error, stackTrace) {
-                                                          // Fallback widget in case of an error
-                                                          return const Icon(
-                                                              Icons
-                                                                  .broken_image,
-                                                              size: 100);
-                                                        },
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ),
-                                              );
-                                            },
-                                            child: const Icon(
-                                              Icons.location_on,
-                                              color: Colors
-                                                  .blue, // Blue for additional markers
-                                              size: 40,
-                                            ),
-                                          ),
-                                        );
-                                      }),
+                            ]
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(20), 
+                            child: RepaintBoundary(
+                              key: _shareWidgetKey,
+                              child: Container(
+                                width: vhh(context, 100),
+                                height: vhh(context, 65),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(20), // Rounded corners for image
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.grey.withValues(alpha: 0.3),
+                                      blurRadius: 10,
+                                      spreadRadius: 2,
+                                      offset: const Offset(0, 4),
+                                    ),
                                   ],
                                 ),
-                              ],
-                            ),
+                                clipBehavior: Clip.hardEdge,
+                                child: Column(
+                                  children: [
+                                    Stack(
+                                      children: [
+                                        Center(
+                                          child: GestureDetector(
+                                            onTap: () {},
+                                            child: Image.asset(
+                                              'assets/images/icons/logo.png',
+                                              width: 90,
+                                              height: 80,
+                                            ),
+                                          ),
+                                        ),
+                                        Positioned(
+                                          right: 0,
+                                          top: 10,
+                                          child: IconButton(
+                                            icon: const Icon(Icons.close,
+                                                color: Colors.black, size: 28),
+                                            onPressed: () {
+                                              GlobalVariables.editDestination = null;
+                                              ref.read(pathCoordinatesProvider.notifier).state = [];
+                                              Navigator.push(
+                                                  context,
+                                                  MaterialPageRoute(builder: (context) =>const StartTripScreen()));
+                                            },
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    Padding(
+                                      padding:
+                                          const EdgeInsets.symmetric(horizontal: 11.0),
+                                      child: Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text(
+                                            destination,
+                                            style: TextStyle(
+                                              color: kColorBlack,
+                                              fontSize: 13,
+                                              letterSpacing: -0.1,
+                                              fontWeight: FontWeight.bold,
+                                              fontFamily: 'inter',
+                                            ),
+                                          ),
+                                          Flexible(
+                                            child: Text(
+                                              widget.endDestination,
+                                              style: const TextStyle(
+                                                color: kColorButtonPrimary,
+                                                fontSize: 14,
+                                                decoration: TextDecoration.underline,
+                                                decorationColor: kColorButtonPrimary,
+                                                fontFamily: 'inter',
+                                              ),
+                                              softWrap: true,
+                                              overflow: TextOverflow.visible,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
 
-                            // Zoom in/out buttons
-                            Positioned(
-                              right: 10,
-                              top: 30,
-                              child: Column(
-                                children: [
-                                  FloatingActionButton(
-                                    heroTag: 'zoom_in_button_endtrip_1',
-                                    onPressed: () {
-                                      _mapController.move(
-                                        _mapController.camera.center,
-                                        _mapController.camera.zoom + 1,
-                                      );
-                                    },
-                                    mini: true,
-                                    child: const Icon(Icons.zoom_in),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  FloatingActionButton(
-                                    heroTag: 'zoom_in_button_endtrip_2',
-                                    onPressed: () {
-                                      _mapController.move(
-                                        _mapController.camera.center,
-                                        _mapController.camera.zoom - 1,
-                                      );
-                                    },
-                                    mini: true,
-                                    child: const Icon(Icons.zoom_out),
-                                  ),
-                                ],
-                              ),
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 10),
+                                      child: Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text(
+                                            soundtrack,
+                                            style: TextStyle(
+                                              color: kColorBlack,
+                                              fontSize: 13,
+                                              letterSpacing: -0.1,
+                                              fontWeight: FontWeight.bold,
+                                              fontFamily: 'inter',
+                                            ),
+                                          ),
+                                          Container(
+                                            decoration: BoxDecoration(
+                                              borderRadius: BorderRadius.circular(20),
+                                              color: Colors.white,
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: Colors.black.withValues(alpha: 0.3),
+                                                  spreadRadius: 0.5,
+                                                  blurRadius: 6,
+                                                  offset: const Offset(-3, 5),
+                                                ),
+                                              ],
+                                              border: Border.all(
+                                                color: kColorButtonPrimary,
+                                                width: 1.2,
+                                              ),
+                                            ),
+                                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2.5),
+                                            child: GestureDetector(
+                                              onTap: () {
+                                                _playListClicked();
+                                              },
+                                              child: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  Image.asset(
+                                                    "assets/images/icons/music.png",
+                                                    width: 12,
+                                                    height: 12,
+                                                  ),
+                                                  const SizedBox(width: 3),
+                                                  const Text(
+                                                    'playlist',
+                                                    style: TextStyle(
+                                                      fontSize: 11,
+                                                      color: Colors.black,
+                                                      fontWeight: FontWeight.bold,
+                                                      letterSpacing: -0.1,
+                                                      fontFamily: 'Inter',
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Padding(
+                                      padding: EdgeInsets.symmetric(
+                                          horizontal: vww(context, 2)),
+                                      child: Container(
+                                        height: vhh(context, 30),
+                                        decoration: BoxDecoration(
+                                          border: Border.all(
+                                            color: kColorStrongGrey,
+                                            width: 1,
+                                          ),
+                                        ),
+                                        child: Stack(
+                                          children: [
+                                            FlutterMap(
+                                                mapController: _mapController,
+                                                options: MapOptions(
+                                                  initialCenter: widget.startLocation!,
+                                                  initialZoom: 11.0,
+                                                ),
+                                                children: [
+                                                  TileLayer(
+                                                    urlTemplate:
+                                                        "https://api.mapbox.com/styles/v1/mapbox/streets-v11/tiles/{z}/{x}/{y}?access_token=pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw",
+                                                    additionalOptions: const {
+                                                      'access_token':
+                                                          'pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw',
+                                                    },
+                                                  ),
+                                                  if (pathCoordinates.isNotEmpty)
+                                                    PolylineLayer(
+                                                      polylines: [
+                                                        Polyline(
+                                                          points: pathCoordinates,
+                                                          strokeWidth: 4.0,
+                                                          color: Colors.blue,
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  MarkerLayer(
+                                                    markers: [
+                                                      if (widget.stopMarkers.isNotEmpty)
+                                                        ...widget.stopMarkers.map((markerData) {
+                                                          int index = widget.stopMarkers.indexOf(markerData) + 1;
+                                                          return Marker(
+                                                            width: 20.0,
+                                                            height: 20.0,
+                                                            point: markerData.location,
+                                                            child: GestureDetector(
+                                                              onTap: () {
+                                                                // Display the image in a dialog
+                                                                showDialog(
+                                                                  context: context,
+                                                                  builder: (context) => AlertDialog(
+                                                                    content: Column(
+                                                                      mainAxisSize: MainAxisSize.min,
+                                                                      children: [
+                                                                        Padding(
+                                                                          padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical:4.0),
+                                                                          child: Row(
+                                                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                                            children: [
+                                                                              Text(
+                                                                                markerData.caption,
+                                                                                style: const TextStyle(
+                                                                                  fontSize: 16,
+                                                                                  fontWeight: FontWeight.bold,
+                                                                                  color: Colors.grey,
+                                                                                  fontFamily:'inter',
+                                                                                ),
+                                                                              ),
+                                                                              IconButton(
+                                                                                icon: const Icon(
+                                                                                    Icons.close,
+                                                                                    color:Colors.black),
+                                                                                onPressed:() {
+                                                                                  Navigator.of(context).pop();
+                                                                                },
+                                                                              ),
+                                                                            ],
+                                                                          ),
+                                                                        ),
+                                                                        Image.network(
+                                                                          markerData.imagePath,
+                                                                          fit: BoxFit.cover,
+                                                                          loadingBuilder:(context, child, loadingProgress) {
+                                                                            if (loadingProgress ==null) {
+                                                                              return child;
+                                                                            } else {
+                                                                              return const Center(
+                                                                                child:SpinningLoader(),
+                                                                              );
+                                                                            }
+                                                                          },
+                                                                          errorBuilder:
+                                                                              (context,
+                                                                                  error,
+                                                                                  stackTrace) {
+                                                                            return const Icon(
+                                                                                Icons
+                                                                                    .broken_image,
+                                                                                size:
+                                                                                    100);
+                                                                          },
+                                                                        ),
+                                                                      ],
+                                                                    ),
+                                                                  ),
+                                                                );
+                                                              },
+                                                              child: Container(
+                                                                width: 30,
+                                                                height: 30,
+                                                                decoration:
+                                                                    BoxDecoration(
+                                                                  shape:
+                                                                      BoxShape.circle,
+                                                                  color: Colors.white,
+                                                                  border: Border.all(
+                                                                    color: Colors.black,
+                                                                    width:
+                                                                        2, // Black border
+                                                                  ),
+                                                                ),
+                                                                alignment:
+                                                                    Alignment.center,
+                                                                child: Text(
+                                                                  index
+                                                                      .toString(), // Display index number
+                                                                  style:
+                                                                      const TextStyle(
+                                                                    fontSize: 13,
+                                                                    fontWeight:
+                                                                        FontWeight.bold,
+                                                                    color: Colors.black,
+                                                                  ),
+                                                                ),
+                                                              ),
+                                                            ),
+                                                          );
+                                                        }),
+                                                    ],
+                                                  ),
+                                                ],
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 1),
+                                    Image.asset(
+                                      'assets/images/icons/logo.png',
+                                      width: 90,
+                                      height: 80,
+                                    ),
+                                    const Expanded(
+                                        child: Column(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            Text(
+                                              "the Rolla travel app.",
+                                              style: TextStyle(
+                                                fontSize: 16,
+                                                letterSpacing: -0.1,
+                                                fontWeight: FontWeight.bold,
+                                                fontFamily: 'inter',
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                                ),
                             ),
-                          ],
+                          ),
                         ),
+                    ),
+                    const SizedBox(height: 10),
+                    Container(
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color: kColorGreen,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.4),
+                            blurRadius: 5, 
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: const Column(
+                        children: [
+                          SizedBox(height: 15,),
+                          Text("Success! This trip has been completed.",
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: -0.1,
+                              fontFamily: 'inter',
+                              color: kColorWhite,
+                            ),
+                          ),
+                          SizedBox(height: 15,),
+                        ],
                       ),
                     ),
-
-                    const SizedBox(height: 20),
-                    // Footer Text
-                    const Text(
-                      'Travel. Share.',
-                      style: TextStyle(
-                          fontSize: 16,
-                          fontFamily: 'KadawBold',
-                          color: Colors.grey),
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.only(top: 15.0),
+                          child: Text(
+                            "Share this summary on another platform:",
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: kColorStrongGrey,
+                              fontFamily: 'inter',
+                              letterSpacing: -0.1
+                            ),
+                          ),
+                        ),
+                        const SizedBox(
+                          height: 15,
+                        ),
+                        GestureDetector(
+                          onTap: () {
+                            _onShareClicked();
+                          },
+                          child: Image.asset(
+                            "assets/images/icons/upload_icon.png",
+                            height: 20,
+                          ),
+                        ),
+                        const SizedBox(height: 30,),
+                      ],
                     ),
-                    const SizedBox(height: 15),
-                    const Text(
-                      'the Rolla travel app',
-                      style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.black,
-                          fontFamily: 'Kadaw'),
-                    ),
-                    const SizedBox(height: 30),
                   ],
                 ),
               ),
-              const SizedBox(height: 20),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Text(
-                    'Share this summary:',
-                    style: TextStyle(fontSize: 16, fontFamily: 'Kadaw'),
-                  ),
-                  GestureDetector(
-                    onTap: () {
-                      sendTripData();
-                    },
-                    child: Image.asset(
-                      "assets/images/icons/share.png",
-                      height: 50,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
+            ),
+          )),
       bottomNavigationBar: BottomNavBar(currentIndex: _currentIndex),
     );
   }

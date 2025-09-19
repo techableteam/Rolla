@@ -15,7 +15,7 @@ class SignupStep1Screen extends ConsumerStatefulWidget {
 class _SignupStep1ScreenState extends ConsumerState<SignupStep1Screen> {
   final _firstNameController = TextEditingController();
   final _lastNameController = TextEditingController();
-  final _useremailController= TextEditingController();
+  final _useremailController = TextEditingController();
   final _countryController = TextEditingController();
   bool isPasswordVisible = false;
   double screenHeight = 0;
@@ -35,7 +35,7 @@ class _SignupStep1ScreenState extends ConsumerState<SignupStep1Screen> {
         setState(() {
           this.keyboardHeight = keyboardHeight;
         });
-      } 
+      }
     });
     _firstNameController.addListener(() {
       _validateFirstName(_firstNameController.text);
@@ -48,7 +48,6 @@ class _SignupStep1ScreenState extends ConsumerState<SignupStep1Screen> {
     _useremailController.addListener(() {
       _validateEmailAddress(_useremailController.text);
     });
-
   }
 
   @override
@@ -58,10 +57,6 @@ class _SignupStep1ScreenState extends ConsumerState<SignupStep1Screen> {
     _useremailController.dispose();
     _countryController.dispose();
     super.dispose();
-  }
-
-  Future<bool> _onWillPop() async {
-    return false;
   }
 
   void _validateFirstName(String value) {
@@ -94,7 +89,7 @@ class _SignupStep1ScreenState extends ConsumerState<SignupStep1Screen> {
     });
   }
 
-  void _onPressContinue(){
+  void _onPressContinue() {
     setState(() {
       if (_firstNameController.text.isEmpty) {
         firstNameError = 'First name is required';
@@ -115,18 +110,20 @@ class _SignupStep1ScreenState extends ConsumerState<SignupStep1Screen> {
       }
     });
 
-    if(firstNameError == null && lastNameError == null && emailAddressError == null){
-      Navigator.push(context, MaterialPageRoute(
-        builder: (context) => SignupStep2Screen(
-          firstName: _firstNameController.text,
-          lastName: _lastNameController.text,
-          emailAddress: _useremailController.text,
-        ),
-      ));
+    if (firstNameError == null &&
+        lastNameError == null &&
+        emailAddressError == null) {
+      Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => SignupStep2Screen(
+              firstName: _firstNameController.text,
+              lastName: _lastNameController.text,
+              emailAddress: _useremailController.text,
+            ),
+          ));
     }
-    
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -136,17 +133,20 @@ class _SignupStep1ScreenState extends ConsumerState<SignupStep1Screen> {
       screenHeight = 800;
       keyboardHeight = 0;
     }
-    return WillPopScope (
-      onWillPop: _onWillPop,
-      child: Scaffold(
-        resizeToAvoidBottomInset: true,
-        body: SizedBox.expand(
-          child: SingleChildScrollView(
+    return PopScope(
+        canPop: false, // Prevents default back navigation
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop) {
+            return; // Prevent pop action
+          }
+        },
+        child: Scaffold(
+          resizeToAvoidBottomInset: true,
+          body: SizedBox.expand(
+              child: SingleChildScrollView(
             child: FocusScope(
               child: Container(
-                decoration: const BoxDecoration(
-                  color: kColorWhite
-                ),
+                decoration: const BoxDecoration(color: kColorWhite),
                 height: vhh(context, 100),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.center,
@@ -168,17 +168,19 @@ class _SignupStep1ScreenState extends ConsumerState<SignupStep1Screen> {
                             height: 20,
                           ),
                         ),
-                        
                         Image.asset(
                           'assets/images/icons/logo.png',
-                          width: vww(context, 25),
+                          width: 130,
+                          height: 120,
                         ),
-
-                        Container(width: vww(context, 15),),
+                        Container(
+                          width: vww(context, 15),
+                        ),
                       ],
                     ),
-
-                    SizedBox(height: vhh(context, 5),),
+                    SizedBox(
+                      height: vhh(context, 5),
+                    ),
                     SizedBox(
                       width: vw(context, 38),
                       height: vh(context, 6.5),
@@ -187,33 +189,45 @@ class _SignupStep1ScreenState extends ConsumerState<SignupStep1Screen> {
                         keyboardType: TextInputType.name,
                         autocorrect: false,
                         cursorColor: kColorGrey,
-                        style: const TextStyle(color: kColorBlack, fontSize: 16, fontFamily: 'Kadaw'),
+                        style: const TextStyle(
+                            color: kColorBlack,
+                            fontSize: 16,
+                            fontFamily: 'inter'),
                         decoration: InputDecoration(
                           floatingLabelBehavior: FloatingLabelBehavior.always,
                           enabledBorder: const UnderlineInputBorder(
                             borderSide: BorderSide(color: kColorGrey, width: 1),
                           ),
                           focusedBorder: const UnderlineInputBorder(
-                            borderSide: BorderSide(color: kColorBlack, width: 1.5),
+                            borderSide:
+                                BorderSide(color: kColorBlack, width: 1.5),
                           ),
                           hintText: "First name",
-                          errorText: (firstNameError != null && firstNameError!.isNotEmpty) ? firstNameError : null,
-                          hintStyle: const TextStyle(color: kColorGrey, fontSize: 14, fontFamily: 'Kadaw'),
+                          errorText: (firstNameError != null &&
+                                  firstNameError!.isNotEmpty)
+                              ? firstNameError
+                              : null,
+                          hintStyle: const TextStyle(
+                              color: kColorGrey,
+                              fontSize: 14,
+                              fontFamily: 'inter'),
                           contentPadding: const EdgeInsets.only(
                             top: -8, // Push hint closer to the top
-                            bottom: -5, // Reduce space between text and underline
+                            bottom:
+                                -5, // Reduce space between text and underline
                           ),
                           errorStyle: const TextStyle(
-                            color: Colors.red, // Customize error message color
-                            fontSize: 12, // Reduce font size of the error message
-                            height: 0.5, // Adjust line height for tighter spacing
-                            fontFamily: 'Kadaw'
-                          ),
+                              color:
+                                  Colors.red, // Customize error message color
+                              fontSize:
+                                  12, // Reduce font size of the error message
+                              height:
+                                  0.5, // Adjust line height for tighter spacing
+                              fontFamily: 'inter'),
                           counterText: '',
                         ),
                       ),
                     ),
-
                     SizedBox(
                       width: vw(context, 38),
                       height: vh(context, 6.5),
@@ -222,33 +236,45 @@ class _SignupStep1ScreenState extends ConsumerState<SignupStep1Screen> {
                         keyboardType: TextInputType.name,
                         autocorrect: false,
                         cursorColor: kColorGrey,
-                        style: const TextStyle(color: kColorBlack, fontSize: 16, fontFamily: 'Kadaw'),
+                        style: const TextStyle(
+                            color: kColorBlack,
+                            fontSize: 16,
+                            fontFamily: 'inter'),
                         decoration: InputDecoration(
                           floatingLabelBehavior: FloatingLabelBehavior.always,
                           enabledBorder: const UnderlineInputBorder(
                             borderSide: BorderSide(color: kColorGrey, width: 1),
                           ),
                           focusedBorder: const UnderlineInputBorder(
-                            borderSide: BorderSide(color: kColorBlack, width: 1.5),
+                            borderSide:
+                                BorderSide(color: kColorBlack, width: 1.5),
                           ),
                           hintText: "Last name",
-                          errorText: (lastNameError != null && lastNameError!.isNotEmpty) ? lastNameError : null,
-                          hintStyle: const TextStyle(color: kColorGrey, fontSize: 14, fontFamily: 'Kadaw'),
+                          errorText: (lastNameError != null &&
+                                  lastNameError!.isNotEmpty)
+                              ? lastNameError
+                              : null,
+                          hintStyle: const TextStyle(
+                              color: kColorGrey,
+                              fontSize: 14,
+                              fontFamily: 'inter'),
                           contentPadding: const EdgeInsets.only(
                             top: -8, // Push hint closer to the top
-                            bottom: -5, // Reduce space between text and underline
+                            bottom:
+                                -5, // Reduce space between text and underline
                           ),
                           errorStyle: const TextStyle(
-                            color: Colors.red, // Customize error message color
-                            fontSize: 12, // Reduce font size of the error message
-                            height: 0.5, // Adjust line height for tighter spacing
-                            fontFamily: 'Kadaw'
-                          ),
+                              color:
+                                  Colors.red, // Customize error message color
+                              fontSize:
+                                  12, // Reduce font size of the error message
+                              height:
+                                  0.5, // Adjust line height for tighter spacing
+                              fontFamily: 'inter'),
                           counterText: '',
                         ),
                       ),
                     ),
-
                     SizedBox(
                       width: vw(context, 38),
                       height: vh(context, 6.5),
@@ -257,42 +283,59 @@ class _SignupStep1ScreenState extends ConsumerState<SignupStep1Screen> {
                         keyboardType: TextInputType.emailAddress,
                         autocorrect: false,
                         cursorColor: kColorGrey,
-                        style: const TextStyle(color: kColorBlack, fontSize: 16, fontFamily: 'Kadaw'),
+                        style: const TextStyle(
+                            color: kColorBlack,
+                            fontSize: 16,
+                            fontFamily: 'inter'),
                         decoration: InputDecoration(
                           floatingLabelBehavior: FloatingLabelBehavior.always,
                           enabledBorder: const UnderlineInputBorder(
                             borderSide: BorderSide(color: kColorGrey, width: 1),
                           ),
                           focusedBorder: const UnderlineInputBorder(
-                            borderSide: BorderSide(color: kColorBlack, width: 1.5),
+                            borderSide:
+                                BorderSide(color: kColorBlack, width: 1.5),
                           ),
                           hintText: "Email address",
-                          errorText: (emailAddressError != null && emailAddressError!.isNotEmpty) ? emailAddressError : null,
-                          hintStyle: const TextStyle(color: kColorGrey, fontSize: 14, fontFamily: 'Kadaw'),
+                          errorText: (emailAddressError != null &&
+                                  emailAddressError!.isNotEmpty)
+                              ? emailAddressError
+                              : null,
+                          hintStyle: const TextStyle(
+                              color: kColorGrey,
+                              fontSize: 14,
+                              fontFamily: 'inter'),
                           contentPadding: const EdgeInsets.only(
                             top: -8, // Push hint closer to the top
-                            bottom: -5, // Reduce space between text and underline
+                            bottom:
+                                -5, // Reduce space between text and underline
                           ),
                           errorStyle: const TextStyle(
-                            color: Colors.red, // Customize error message color
-                            fontSize: 12, // Reduce font size of the error message
-                            height: 0.5, // Adjust line height for tighter spacing
-                            fontFamily: 'Kadaw'
-                          ),
+                              color:
+                                  Colors.red, // Customize error message color
+                              fontSize:
+                                  12, // Reduce font size of the error message
+                              height:
+                                  0.5, // Adjust line height for tighter spacing
+                              fontFamily: 'inter'),
                           counterText: '',
                         ),
                       ),
                     ),
-
                     Padding(
-                      padding: EdgeInsets.only(left: vww(context, 15), right: vww(context, 15), top: vhh(context, 5)),
+                      padding: EdgeInsets.only(
+                          left: vww(context, 15),
+                          right: vww(context, 15),
+                          top: vhh(context, 5)),
                       child: ButtonWidget(
                         btnType: ButtonWidgetType.continueText,
                         borderColor: kColorButtonPrimary,
                         textColor: kColorWhite,
                         fullColor: kColorButtonPrimary,
                         onPressed: () {
-                          if(firstNameError == null && lastNameError == null && emailAddressError == null){
+                          if (firstNameError == null &&
+                              lastNameError == null &&
+                              emailAddressError == null) {
                             _onPressContinue();
                           }
                         },
@@ -302,9 +345,7 @@ class _SignupStep1ScreenState extends ConsumerState<SignupStep1Screen> {
                 ),
               ),
             ),
-          )
-        ),
-      )
-    );
+          )),
+        ));
   }
 }

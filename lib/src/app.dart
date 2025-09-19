@@ -19,6 +19,7 @@ class RollaTravel extends ConsumerWidget {
           routerConfig: goRouter,
           debugShowCheckedModeBanner: false,
           title: 'RollaTravel',
+          color: Colors.white,
         );
       },
     );

@@ -1,0 +1,2 @@
+D:/k/RollaTravel/android/app/.cxx/Debug/w6i3y6o5/armeabi-v7a/CMakeFiles/edit_cache.dir
+D:/k/RollaTravel/android/app/.cxx/Debug/w6i3y6o5/armeabi-v7a/CMakeFiles/rebuild_cache.dir

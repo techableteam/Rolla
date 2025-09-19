@@ -1,5 +1,8 @@
 // import 'package:RollaTravel/src/screen/droppin/select_locaiton_screen.dart';
-import 'package:RollaTravel/src/screen/droppin/choosen_location_screen.dart';
+// import 'package:RollaTravel/src/screen/droppin/choosen_location_screen.dart';
+import 'package:RollaTravel/src/screen/droppin/select_locaiton_screen.dart';
+import 'package:RollaTravel/src/utils/global_variable.dart';
+import 'package:RollaTravel/src/utils/spinner_loader.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
@@ -36,6 +39,16 @@ class AnotherLocationScreenState extends ConsumerState<AnotherLocationScreen> {
   final MapController _mapController = MapController();
   final logger = Logger();
   final TextEditingController _searchController = TextEditingController();
+  bool _isLoading = false;
+  static const String mapboxAccessToken =
+      "pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw";
+
+  final List<String> _mapStyles = [
+    "https://api.mapbox.com/styles/v1/mapbox/streets-v11/tiles/{z}/{x}/{y}?access_token=$mapboxAccessToken",
+    "https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/{z}/{x}/{y}?access_token=$mapboxAccessToken",
+    "https://api.mapbox.com/styles/v1/mapbox/light-v10/tiles/{z}/{x}/{y}?access_token=$mapboxAccessToken",
+    "https://api.mapbox.com/styles/v1/mapbox/dark-v10/tiles/{z}/{x}/{y}?access_token=$mapboxAccessToken",
+  ];
 
   @override
   void initState() {
@@ -48,6 +61,7 @@ class AnotherLocationScreenState extends ConsumerState<AnotherLocationScreen> {
         });
       }
     });
+    _checkLocationServices();
     _getCurrentLocation();
   }
 
@@ -58,17 +72,13 @@ class AnotherLocationScreenState extends ConsumerState<AnotherLocationScreen> {
     super.dispose();
   }
 
-  Future<bool> _onWillPop() async {
-    return false;
-  }
-
   Future<void> _getCurrentLocation() async {
-    logger.i("Checking location permission...");
-
-    final permissionStatus = await Permission.location.request();
-
-    if (permissionStatus.isGranted) {
-      // Permission granted, fetch current location
+    setState(() {
+      _isLoading = true; // Start loading
+    });
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.whileInUse ||
+        permission == LocationPermission.always) {
       Position position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
@@ -77,15 +87,34 @@ class AnotherLocationScreenState extends ConsumerState<AnotherLocationScreen> {
       setState(() {
         _currentLocation = LatLng(position.latitude, position.longitude);
         logger.i("_currentLocation: $_currentLocation");
+        _isLoading = false; // Stop loading
       });
-      _mapController.move(_currentLocation!, 13.0);
-    } else if (permissionStatus.isDenied ||
-        permissionStatus.isPermanentlyDenied) {
-      // Permission denied - prompt user to open settings
-      logger.i("Location permission denied. Redirecting to settings.");
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted) {
+            try {
+              _mapController.move(_currentLocation!, 12.0);
+            } catch (e) {
+              logger.e("Error moving map: $e");
+            }
+          }
+        });
+      });
+      return;
+    } 
+     if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        logger.i("Location permission denied.");
+        _showPermissionDeniedDialog();
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      logger.i("Location permission permanently denied.");
       _showPermissionDeniedDialog();
-    } else {
-      logger.i("Location permission status: $permissionStatus");
+      return;
     }
   }
 
@@ -102,8 +131,9 @@ class AnotherLocationScreenState extends ConsumerState<AnotherLocationScreen> {
             TextButton(
               child: const Text("Open Settings"),
               onPressed: () async {
-                await openAppSettings(); // This will open app settings
+                await openAppSettings();
                 if (mounted) {
+                  // ignore: use_build_context_synchronously
                   Navigator.of(context).pop();
                 }
               },
@@ -122,9 +152,66 @@ class AnotherLocationScreenState extends ConsumerState<AnotherLocationScreen> {
     );
   }
 
-  // void _selectMarker(LatLng location){
-  //   Navigator.push(context, MaterialPageRoute(builder: (context) => SelectLocationScreen(selectedLocation: location,)));
-  // }
+  Future<void> _checkLocationServices() async {
+    bool isLocationEnabled = await Geolocator.isLocationServiceEnabled();
+    LocationPermission permission = await Geolocator.checkPermission();
+
+    if (!isLocationEnabled) {
+      logger.e("Location services are disabled!");
+      _showLocationDisabledDialog();
+      return;
+    }
+
+    // ✅ If permission is denied, request it
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        logger.e("Location permission denied!");
+        _showPermissionDeniedDialog();
+        return;
+      }
+    }
+
+    // ✅ If permission is permanently denied, open settings
+    if (permission == LocationPermission.deniedForever) {
+      logger.e("Location permission permanently denied!");
+      _showPermissionDeniedDialog();
+      return;
+    }
+
+    // ✅ If everything is enabled, log success
+    logger.i("Location services and permissions are enabled.");
+  }
+
+  void _showLocationDisabledDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text("Location Services Disabled"),
+          content: const Text(
+            "Please enable location services to track your movement.",
+          ),
+          actions: [
+            TextButton(
+              child: const Text("Open Settings"),
+              onPressed: () async {
+                await Geolocator.openLocationSettings(); // ✅ Opens GPS settings
+                // ignore: use_build_context_synchronously
+                Navigator.of(context).pop();
+              },
+            ),
+            TextButton(
+              child: const Text("Cancel"),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
 
   Future<List<String>> fetchAddressSuggestions(String query) async {
     final response = await http.get(
@@ -134,19 +221,22 @@ class AnotherLocationScreenState extends ConsumerState<AnotherLocationScreen> {
 
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
-      final features = data['features'] as List;
+      final List features = (data['features'] ?? []) as List;
       return features
           .map((feature) => feature['place_name'] as String)
           .toList();
     } else {
-      throw Exception('Failed to load suggestions');
+      debugPrint('API Error: ${response.statusCode} - ${response.body}');
+      return [];
     }
   }
+
+  
 
   Future<void> _moveMarkerToAddress(String address) async {
     final response = await http.get(
       Uri.parse(
-          'https://api.mapbox.com/geocoding/v5/mapbox.places/$address.json?access_token=pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw'),
+          'https://api.mapbox.com/geocoding/v5/mapbox.places/$address.json?access_token=$mapboxAccessToken'),
     );
 
     if (response.statusCode == 200) {
@@ -155,16 +245,24 @@ class AnotherLocationScreenState extends ConsumerState<AnotherLocationScreen> {
       if (features.isNotEmpty) {
         final location = features.first['geometry']['coordinates'];
         final latLng = LatLng(location[1], location[0]);
+
         setState(() {
           _selectedLocation = latLng;
           logger.i("Selected location: $_selectedLocation");
         });
+
+        // Move the map, then force rebuild after a short delay
         _mapController.move(latLng, 13.0);
+
+        // Force redraw after slight delay to avoid blank tiles
+        await Future.delayed(const Duration(milliseconds: 300));
+        _mapController.move(latLng, 13.0); // Re-move to same point
       }
     } else {
       throw Exception('Failed to load location');
     }
   }
+
 
   Future<void> _updateAddressFromLocation(LatLng location) async {
     final response = await http.get(
@@ -190,64 +288,67 @@ class AnotherLocationScreenState extends ConsumerState<AnotherLocationScreen> {
     Navigator.push(
         context,
         MaterialPageRoute(
-            builder: (context) => ChoosenLocationScreen(
+            builder: (context) => SelectLocationScreen(
                   caption: widget.caption,
                   imagePath: widget.imagePath,
-                  location: _selectedLocation,
+                  selectedLocation: _selectedLocation,
                 )));
-    logger.i("Selected location: $_selectedLocation");
+    // logger.i("Selected location: $_selectedLocation");
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: WillPopScope(
-        onWillPop: _onWillPop,
+      backgroundColor: Colors.white,
+      body: PopScope(
+        canPop: false, // Prevents popping by default
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop) {
+            return; // Prevent pop action
+          }
+        },
         child: Padding(
-          padding: const EdgeInsets.all(10.0),
+          padding: const EdgeInsets.symmetric(horizontal: 0.0),
           child: Column(
             children: <Widget>[
               Expanded(
                 child: Column(
                   children: <Widget>[
-                    // Logo and close button aligned at the top
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8.0),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Image.asset('assets/images/icons/logo.png',
-                              height: vhh(context, 12)),
-                          IconButton(
-                            icon: const Icon(Icons.close, size: 30),
-                            onPressed: () {
-                              Navigator.of(context).pop(); // Close the screen
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    //Search input text field
+                    SizedBox(height: vhh(context, 5)),
                     Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Image.asset('assets/images/icons/logo.png',
+                            width: 90,
+                            height: 80,),
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 30),
+                          onPressed: () {
+                            Navigator.of(context).pop(); // Close the screen
+                          },
+                        ),
+                      ],
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10.0),
+                      child: Row(
                       children: [
                         const Icon(Icons.search, size: 24, color: Colors.black),
                         const SizedBox(width: 8),
                         SizedBox(
                           height: 35,
-                          width: vww(context, 86),
+                          width: vww(context, 84),
                           child: TypeAheadFormField(
                             textFieldConfiguration: TextFieldConfiguration(
                               controller: _searchController,
                               decoration: InputDecoration(
                                 hintText: "Search Locations",
                                 hintStyle: const TextStyle(
-                                    fontSize: 16,
-                                    fontFamily:
-                                        'Kadaw'), // Set font size for hint text
+                                    fontSize: 15,
+                                    fontFamily:'inter'),
                                 contentPadding: const EdgeInsets.symmetric(
                                     vertical: 0.0,
-                                    horizontal: 16.0), // Set inner padding
+                                    horizontal: 16.0),
                                 border: OutlineInputBorder(
                                   borderRadius: BorderRadius.circular(4.0),
                                   borderSide: const BorderSide(
@@ -267,9 +368,9 @@ class AnotherLocationScreenState extends ConsumerState<AnotherLocationScreen> {
                                 fillColor: Colors.grey[200],
                               ),
                               style: const TextStyle(
-                                  fontSize: 14,
-                                  fontFamily:
-                                      'Kadaw'), // Set font size for input text
+                                  fontSize: 15,
+                                  color: Colors.black,
+                                  fontFamily:'inter'), 
                             ),
                             suggestionsCallback: (pattern) async {
                               return await fetchAddressSuggestions(pattern);
@@ -286,156 +387,158 @@ class AnotherLocationScreenState extends ConsumerState<AnotherLocationScreen> {
                           ),
                         ),
                       ],
-                    ),
+                    ),),
+                    
                     SizedBox(
                       height: vhh(context, 1),
                     ),
-                    //Flutter map widget
-                    SizedBox(
-                      height: vhh(context, 65),
-                      width: vww(context, 96),
-                      child: Center(
-                          child: Stack(
-                        children: [
-                          FlutterMap(
-                            mapController: _mapController,
-                            options: MapOptions(
-                              initialCenter: _currentLocation ??
-                                  const LatLng(37.7749, -122.4194),
-                              initialZoom: 12.0,
-                              onTap: (tapPosition, point) {
-                                setState(() {
-                                  _selectedLocation = point;
-                                });
-                                _updateAddressFromLocation(point);
-                              },
-                            ),
-                            children: [
-                              TileLayer(
-                                urlTemplate:
-                                    "https://api.mapbox.com/styles/v1/mapbox/streets-v11/tiles/{z}/{x}/{y}?access_token=pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw",
-                                additionalOptions: const {
-                                  'access_token':
-                                      'pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw',
-                                },
-                              ),
-                              MarkerLayer(
-                                markers: [
-                                  if (_selectedLocation != null)
-                                    Marker(
-                                      width: 80.0,
-                                      height: 80.0,
-                                      point: _selectedLocation!,
-                                      child: GestureDetector(
-                                        // onTap: () => _selectMarker(_selectedLocation!),
-                                        child: const Icon(Icons.location_on,
-                                            color: Colors.red, size: 40),
+
+                    _isLoading
+                        ? const Center(
+                            child: SpinningLoader(), 
+                          )
+                        : SizedBox(
+                            height: vhh(context, 62),
+                            width: vww(context, 98),
+                            child: Center(
+                                child: Stack(
+                              children: [
+                                FlutterMap(
+                                  mapController: _mapController,
+                                  options: MapOptions(
+                                    initialCenter: _currentLocation ??
+                                        const LatLng(37.7749, -122.4194),
+                                    initialZoom: 12.0,
+                                    onTap: (tapPosition, point) {
+                                      setState(() {
+                                        _selectedLocation = point;
+                                      });
+                                      _updateAddressFromLocation(point);
+                                    },
+                                  ),
+                                  children: [
+                                    TileLayer(
+                                      urlTemplate: _mapStyles[
+                                        GlobalVariables.mapStyleSelected],
+                                      additionalOptions: const {
+                                        'access_token':
+                                            'pk.eyJ1Ijoicm9sbGExIiwiYSI6ImNseGppNHN5eDF3eHoyam9oN2QyeW5mZncifQ.iLIVq7aRpvMf6J3NmQTNAw',
+                                      },
+                                    ),
+                                    MarkerLayer(
+                                      markers: [
+                                        if (_selectedLocation != null)
+                                          Marker(
+                                            width: 60.0,
+                                            height: 60.0,
+                                            point: _selectedLocation!,
+                                            child: GestureDetector(
+                                              // onTap: () => _selectMarker(_selectedLocation!),
+                                              child: const Icon(
+                                                  Icons.location_on,
+                                                  color: Colors.red,
+                                                  size: 30),
+                                            ),
+                                          )
+                                        else if (_currentLocation != null)
+                                          Marker(
+                                            width: 60.0,
+                                            height: 60.0,
+                                            point: _currentLocation!,
+                                            child: GestureDetector(
+                                              // onTap: () => _selectMarker(_currentLocation!),
+                                              child: const Icon(
+                                                  Icons.location_on,
+                                                  color: Colors.red,
+                                                  size: 30),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                                Positioned(
+                                  right: 10,
+                                  top: 70,
+                                  child: Column(
+                                    children: [
+                                      FloatingActionButton(
+                                        heroTag:'zoom_in_button_otherlocation',
+                                        onPressed: () {
+                                          _mapController.move(
+                                            _mapController.camera.center,
+                                            _mapController.camera.zoom + 1,
+                                          );
+                                        },
+                                        mini: true,
+                                        child: const Icon(Icons.zoom_in),
                                       ),
-                                    )
-                                  else if (_currentLocation != null)
-                                    Marker(
-                                      width: 80.0,
-                                      height: 80.0,
-                                      point: _currentLocation!,
-                                      child: GestureDetector(
-                                        // onTap: () => _selectMarker(_currentLocation!),
-                                        child: const Icon(Icons.location_on,
-                                            color: Colors.red, size: 40),
+                                      const SizedBox(height: 8),
+                                      FloatingActionButton(
+                                        heroTag:'zoom_out_button_otherlocation', 
+                                        onPressed: () {
+                                          _mapController.move(
+                                            _mapController.camera.center,
+                                            _mapController.camera.zoom - 1,
+                                          );
+                                        },
+                                        mini: true,
+                                        child: const Icon(Icons.zoom_out),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Positioned(
+                                  top: 5,
+                                  left: 0,
+                                  right: 0,
+                                  child: Padding(
+                                    padding:EdgeInsets.zero,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(5.0),
+                                      color:Colors.white.withValues(alpha: 0.5),
+                                      child: Text(
+                                        'Search or tap on the map where you want to \ndrop a pin',
+                                        style: TextStyle(
+                                            color: Colors.black.withValues(alpha: 0.9),
+                                            fontSize: 14,
+                                            letterSpacing: -0.43,
+                                            fontFamily: 'inter'),
+                                        textAlign: TextAlign.center,
                                       ),
                                     ),
-                                ],
-                              ),
-                            ],
-                          ),
-                          Positioned(
-                            right: 10,
-                            top: 70,
-                            child: Column(
-                              children: [
-                                FloatingActionButton(
-                                  heroTag:
-                                      'zoom_in_button_otherlocation', // Unique tag for the zoom in button
-                                  onPressed: () {
-                                    _mapController.move(
-                                      _mapController.camera.center,
-                                      _mapController.camera.zoom + 1,
-                                    );
-                                  },
-                                  mini: true,
-                                  child: const Icon(Icons.zoom_in),
+                                  ),
                                 ),
-                                const SizedBox(height: 8),
-                                FloatingActionButton(
-                                  heroTag:
-                                      'zoom_out_button_otherlocation', // Unique tag for the zoom out button
-                                  onPressed: () {
-                                    _mapController.move(
-                                      _mapController.camera.center,
-                                      _mapController.camera.zoom - 1,
-                                    );
-                                  },
-                                  mini: true,
-                                  child: const Icon(Icons.zoom_out),
+                                Positioned(
+                                  bottom: 15,
+                                  left: 0,
+                                  right: 0,
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      _onChooseLocation();
+                                    },
+                                    child: Container(
+                                      margin: const EdgeInsets.symmetric(horizontal:20), 
+                                      padding: const EdgeInsets.all(8.0), 
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withValues(alpha:0.9),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Text(
+                                        'Choose this location',
+                                        style: TextStyle(
+                                          color: Colors.black.withValues(alpha:0.95), 
+                                          fontSize: 14,
+                                          fontFamily: 'interBold',
+                                        ),
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ],
-                            ),
+                            )),
                           ),
-                          Positioned(
-                            top: 5,
-                            left: 0,
-                            right: 0,
-                            child: Padding(
-                              padding: EdgeInsets.zero, // Adjust for width
-                              child: Container(
-                                padding: const EdgeInsets.all(5.0),
-                                color: Colors.white.withOpacity(0.5),
-                                child: Text(
-                                  'Search or double tap on the map \nwhere you want ot drop pin',
-                                  style: TextStyle(
-                                      color: Colors.black.withOpacity(0.9),
-                                      fontSize: 14,
-                                      fontStyle: FontStyle.italic,
-                                      fontFamily: 'Kadaw'),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
-                            ),
-                          ),
-                          Positioned(
-                            bottom: 15,
-                            left: 0,
-                            right: 0,
-                            child: GestureDetector(
-                              onTap: () {
-                                _onChooseLocation();
-                              },
-                              child: Container(
-                                margin: const EdgeInsets.symmetric(
-                                    horizontal:
-                                        20), // Spacing from screen edges
-                                padding: const EdgeInsets.all(
-                                    8.0), // Adjust padding for content
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(
-                                      0.9), // Semi-transparent background
-                                  borderRadius: BorderRadius.circular(
-                                      8), // Rounded corners
-                                ),
-                                child: Text(
-                                  'Choose this location',
-                                  style: TextStyle(
-                                    color: Colors.black.withOpacity(0.95),
-                                    fontSize: 14,
-                                    fontFamily: 'KadawBold',
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      )),
-                    ),
                   ],
                 ),
               ),

@@ -1,16 +1,18 @@
 import 'package:RollaTravel/src/constants/app_button.dart';
 import 'package:RollaTravel/src/constants/app_styles.dart';
 import 'package:RollaTravel/src/screen/auth/signup_step1_screen.dart';
-import 'package:RollaTravel/src/screen/profile/profile_screen.dart';
+import 'package:RollaTravel/src/screen/home/home_screen.dart';
+// import 'package:RollaTravel/src/screen/home/home_view_screen.dart';
+// import 'package:RollaTravel/src/screen/profile/profile_screen.dart';
 import 'package:RollaTravel/src/services/api_service.dart';
 import 'package:RollaTravel/src/translate/en.dart';
 import 'package:RollaTravel/src/utils/global_variable.dart';
 import 'package:RollaTravel/src/utils/index.dart';
+import 'package:RollaTravel/src/utils/spinner_loader.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/gestures.dart';
-// import 'package:shared_preferences/shared_preferences.dart';
-// import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:logger/logger.dart';
 
 class SigninScreen extends ConsumerStatefulWidget {
@@ -41,7 +43,7 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
         setState(() {
           this.keyboardHeight = keyboardHeight;
         });
-      } 
+      }
     });
     _usernameController.addListener(() {
       _validateUsername(_usernameController.text);
@@ -101,31 +103,36 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
         passwordError = null; // No error
       }
     });
-   
+
     if (usernameError == null && passwordError == null) {
-       setState(() {
+      setState(() {
         _isLoading = true;
       });
-      
+
       try {
         final response = await _apiService.login(
           _usernameController.text,
           _passwordController.text,
         );
 
+        final prefs = await SharedPreferences.getInstance();
+
         if (response['token'] != null && response['token'].isNotEmpty) {
+          await prefs.setString('username', _usernameController.text);
+          await prefs.setString('password', _passwordController.text);
+
           final Map<String, dynamic>? userData = response['userData'] != null
-            ? response['userData'] as Map<String, dynamic>
-            : null;
+              ? response['userData'] as Map<String, dynamic>
+              : null;
 
           final List<dynamic>? dropPinsData = response['droppins'] != null
               ? response['droppins'] as List<dynamic>
               : null;
 
           final List<dynamic>? garagesData = response['garages'] != null
-            ? response['garages'] as List<dynamic>?
-            : null;
-            
+              ? response['garages'] as List<dynamic>?
+              : null;
+
           if (dropPinsData != null) {
             GlobalVariables.dropPinsData = dropPinsData;
           }
@@ -133,34 +140,44 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
             // Handle the case where userData is null
             GlobalVariables.userId = userData['id'];
             GlobalVariables.userName = userData['rolla_username'];
-            GlobalVariables.realName = '${userData['first_name']} ${userData['last_name']}';
+            GlobalVariables.realName =
+                '${userData['first_name']} ${userData['last_name']}';
             GlobalVariables.happyPlace = userData['happy_place'];
             GlobalVariables.bio = userData['bio'];
-            GlobalVariables.garage = userData['garage'];
+            // GlobalVariables.garage = userData['garage'];
             GlobalVariables.userImageUrl = userData['photo'];
             GlobalVariables.followingIds = userData['following_user_id'];
+            
           }
 
-          if(garagesData != null && garagesData.isNotEmpty) {
-             GlobalVariables.garageLogoUrl = garagesData[0]['logo_path'];
+          if (garagesData != null && garagesData.isNotEmpty) {
+            GlobalVariables.garageLogoUrl = garagesData[0]['logo_path'];
           }
-          
+
           GlobalVariables.odometer = response['trip_miles_sum'];
           GlobalVariables.tripCount = response['total_trips'];
+
+          if (response['trips'] != null && response['trips'].isNotEmpty) {
+            int tripId = response['trips'][0];  
+            SharedPreferences prefs = await SharedPreferences.getInstance();
+            await prefs.setInt("tripId", tripId);
+          }
+
           if (mounted) {
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => const ProfileScreen()),
+              MaterialPageRoute(builder: (context) => const HomeScreen()),
             );
           }
         } else {
           _showErrorDialog(response['message']);
         }
       } catch (e, stackTrace) {
-          // Log and handle unexpected errors
-          logger.e('Login error: $e\nStack trace: $stackTrace');
-          _showErrorDialog('An unexpected error occurred. Please try again later.');
-        } finally {
+        // Log and handle unexpected errors
+        logger.e('Login error: $e\nStack trace: $stackTrace');
+        _showErrorDialog(
+            'An unexpected error occurred. Please try again later.');
+      } finally {
         setState(() {
           _isLoading = false;
         });
@@ -186,10 +203,6 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
     );
   }
 
-  Future<bool> _onWillPop() async {
-    return false;
-  }
-
   @override
   Widget build(BuildContext context) {
     if (_isKeyboardVisible == true) {
@@ -198,214 +211,256 @@ class _SigninScreenState extends ConsumerState<SigninScreen> {
       screenHeight = 800;
       keyboardHeight = 0;
     }
-    return WillPopScope (
-      onWillPop: _onWillPop,
-      child: Scaffold(
-        resizeToAvoidBottomInset: true,
-        body: SizedBox.expand(
-          child: SingleChildScrollView(
+    return PopScope(
+        canPop: false, 
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop) {
+            return;
+          }
+        },
+        child: Scaffold(
+          resizeToAvoidBottomInset: true,
+          body: SizedBox.expand(
+              child: SingleChildScrollView(
             child: FocusScope(
               child: Container(
-                decoration: const BoxDecoration(
-                  color: kColorWhite
-                ),
-                height: vhh(context, 100),
-                child: Padding(padding: EdgeInsets.only(left: vww(context, 7), right: vww(context, 7)),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: <Widget>[
-                      SizedBox(
-                        height: vhh(context, 15),
-                      ),
-                      Image.asset(
-                        'assets/images/icons/logo.png',
-                        width: vww(context, 24),
-                      ),
-                      SizedBox(height: vhh(context, 5),),
-                      SizedBox(
-                        width: vw(context, 38),
-                        height: vh(context, 6.5),
-                        child: TextField(
-                          controller: _usernameController,
-                          keyboardType: TextInputType.emailAddress,
-                          autocorrect: false,
-                          cursorColor: kColorGrey,
-                          style: const TextStyle(color: kColorBlack, fontSize: 16, fontFamily: 'Kadaw'),
-                          decoration: InputDecoration(
-                            floatingLabelBehavior: FloatingLabelBehavior.always,
-                            enabledBorder: const UnderlineInputBorder(
-                              borderSide: BorderSide(color: kColorGrey, width: 1),
-                            ),
-                            focusedBorder: const UnderlineInputBorder(
-                              borderSide: BorderSide(color: kColorBlack, width: 1.5),
-                            ),
-                            hintText: user_name,
-                            errorText: (usernameError != null && usernameError!.isNotEmpty) ? usernameError : null,
-                            hintStyle: const TextStyle(color: kColorGrey, fontSize: 14, fontFamily: 'Kadaw'),
-                            contentPadding: const EdgeInsets.only(
-                              top: -8, // Push hint closer to the top
-                              bottom: -5, // Reduce space between text and underline
-                            ),
-                            errorStyle: const TextStyle(
-                              color: Colors.red, // Customize error message color
-                              fontSize: 12, // Reduce font size of the error message
-                              height: 0.5, // Adjust line height for tighter spacing
-                              fontFamily: 'Kadaw'
-                            ),
-                            counterText: '',
-                          ),
+                  decoration: const BoxDecoration(color: kColorWhite),
+                  height: vhh(context, 100),
+                  child: Padding(
+                    padding: EdgeInsets.only(
+                        left: vww(context, 7), right: vww(context, 7)),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: <Widget>[
+                        SizedBox(
+                          height: vhh(context, 15),
                         ),
-                      ),
-                      SizedBox(
-                        width: vw(context, 38),
-                        height: vh(context, 6.5),
-                        child: TextFormField(
-                          controller: _passwordController,
-                          keyboardType: TextInputType.emailAddress,
-                          autocorrect: false,
-                          cursorColor: kColorGrey,
-                          obscureText: true,
-                          style: const TextStyle(color: kColorBlack, fontSize: 16, fontFamily: 'Kadaw'),
-                          decoration: InputDecoration(
-                            floatingLabelBehavior: FloatingLabelBehavior.always,
-                            enabledBorder: const UnderlineInputBorder(
-                              borderSide: BorderSide(color: kColorGrey, width: 1),
-                            ),
-                            focusedBorder: const UnderlineInputBorder(
-                              borderSide: BorderSide(color: kColorBlack, width: 1.5),
-                            ),
-                            hintText: password_title,
-                            errorText: (passwordError != null && passwordError!.isNotEmpty) ? passwordError : null,
-                            hintStyle: const TextStyle(color: kColorGrey, fontSize: 14, fontFamily: 'Kadaw'),
-                            contentPadding: const EdgeInsets.only(
-                              top: -8, // Push hint closer to the top
-                              bottom: -5, // Reduce space between text and underline
-                            ),
-                            errorStyle: const TextStyle(
-                              color: Colors.red, // Customize error message color
-                              fontSize: 12, // Reduce font size of the error message
-                              height: 0.5, // Adjust line height for tighter spacing
-                              fontFamily: 'Kadaw'
-                            ),
-                            counterText: '',
-                          ),
+                        Image.asset(
+                          'assets/images/icons/logo.png',
+                          width: 130,
+                          height: 120,
                         ),
-                      ),
-                      _isLoading ? const CircularProgressIndicator() 
-                      : Padding(
-                          padding: EdgeInsets.only(left: vww(context, 15), right: vww(context, 15), top: vhh(context, 3)),
-                          child: ButtonWidget(
-                            btnType: ButtonWidgetType.loginText,
-                            borderColor: kColorButtonPrimary,
-                            textColor: kColorWhite,
-                            fullColor: kColorButtonPrimary,
-                            onPressed: () {
-                              if (usernameError == null && passwordError == null) {
-                                _handleLogin();
-                              }else {
-                                logger.i("Form validation failed or FormState is null.");
-                              }
-                            },
-                          ),
+                        SizedBox(
+                          height: vhh(context, 4),
                         ),
-                          
-                      
-                      SizedBox( height: vhh(context, 3),),
-                      SizedBox(height: vhh(context, 1)),
-                      Padding(
-                        padding: EdgeInsets.only(
-                          left: vww(context, 10), 
-                          right: vww(context, 10),
-                        ),
-                        child: Text.rich(
-                          TextSpan(
-                            children: [
-                              const TextSpan(
-                                text: dont_have_account,
-                                style: TextStyle(
+                        SizedBox(
+                          width: vw(context, 38),
+                          height: vh(context, 6.5),
+                          child: TextField(
+                            controller: _usernameController,
+                            keyboardType: TextInputType.emailAddress,
+                            autocorrect: false,
+                            cursorColor: kColorGrey,
+                            style: const TextStyle(
+                                color: kColorBlack,
+                                fontSize: 16,
+                                fontFamily: 'inter'),
+                            decoration: InputDecoration(
+                              floatingLabelBehavior:
+                                  FloatingLabelBehavior.always,
+                              enabledBorder: const UnderlineInputBorder(
+                                borderSide:
+                                    BorderSide(color: kColorGrey, width: 1),
+                              ),
+                              focusedBorder: const UnderlineInputBorder(
+                                borderSide:
+                                    BorderSide(color: kColorBlack, width: 1.5),
+                              ),
+                              hintText: username,
+                              errorText: (usernameError != null &&
+                                      usernameError!.isNotEmpty)
+                                  ? usernameError
+                                  : null,
+                              hintStyle: const TextStyle(
                                   color: kColorGrey,
                                   fontSize: 14,
-                                  fontFamily: 'Kadaw'
-                                ),
+                                  fontFamily: 'inter'),
+                              contentPadding: const EdgeInsets.only(
+                                top: -8, // Push hint closer to the top
+                                bottom:
+                                    -5, // Reduce space between text and underline
                               ),
-                              TextSpan(
-                                text: here_title,
-                                style: const TextStyle(
-                                  color: kColorHereButton,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.bold,
-                                  decoration: TextDecoration.underline,
-                                  decorationColor: kColorHereButton,
-                                  fontFamily: 'Kadaw'
-                                ),
-                                recognizer: TapGestureRecognizer()..onTap = () {
-                                  Navigator.push(context, MaterialPageRoute(
-                                    builder: (context) => const SignupStep1Screen(),
-                                  )); 
-                                },
-                              ),
-                            ],
+                              errorStyle: const TextStyle(
+                                  color: Colors
+                                      .red, // Customize error message color
+                                  fontSize:
+                                      12, // Reduce font size of the error message
+                                  height:
+                                      0.5, // Adjust line height for tighter spacing
+                                  fontFamily: 'inter'),
+                              counterText: '',
+                            ),
                           ),
-                          textAlign: TextAlign.center,
                         ),
-                      ),
-
-                      SizedBox(
-                        height: vhh(context, 15),
-                      ),
-
-                      Padding(
-                        padding: EdgeInsets.only(
-                          left: vww(context, 15), 
-                          right: vww(context, 15),
-                        ),
-                        child: Text.rich(
-                          TextSpan(
-                            children: [
-                              const TextSpan(
-                                text: forgotPasswod,
-                                style: TextStyle(
+                        SizedBox(
+                          width: vw(context, 38),
+                          height: vh(context, 6.5),
+                          child: TextFormField(
+                            controller: _passwordController,
+                            keyboardType: TextInputType.emailAddress,
+                            autocorrect: false,
+                            cursorColor: kColorGrey,
+                            obscureText: true,
+                            style: const TextStyle(
+                                color: kColorBlack,
+                                fontSize: 16,
+                                fontFamily: 'inter'),
+                            decoration: InputDecoration(
+                              floatingLabelBehavior:
+                                  FloatingLabelBehavior.always,
+                              enabledBorder: const UnderlineInputBorder(
+                                borderSide:
+                                    BorderSide(color: kColorGrey, width: 1),
+                              ),
+                              focusedBorder: const UnderlineInputBorder(
+                                borderSide:
+                                    BorderSide(color: kColorBlack, width: 1.5),
+                              ),
+                              hintText: passwordtitle,
+                              errorText: (passwordError != null &&
+                                      passwordError!.isNotEmpty)
+                                  ? passwordError
+                                  : null,
+                              hintStyle: const TextStyle(
                                   color: kColorGrey,
                                   fontSize: 14,
-                                  fontFamily: 'Kadaw'
-                                ),
+                                  fontFamily: 'inter'),
+                              contentPadding: const EdgeInsets.only(
+                                top: -8, // Push hint closer to the top
+                                bottom:
+                                    -5, // Reduce space between text and underline
                               ),
-                              TextSpan(
-                                text: hereTitleNo,
-                                style: const TextStyle(
-                                  color: kColorHereButton,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.bold,
-                                  decoration: TextDecoration.underline,
-                                  decorationColor: kColorHereButton,
-                                  fontFamily: 'Kadaw'
-                                ),
-                                recognizer: TapGestureRecognizer()..onTap = () {
-                                },
-                              ),
-                              const TextSpan(
-                                text: toReset,
-                                style: TextStyle(
-                                  color: kColorGrey,
-                                  fontSize: 14,
-                                  fontFamily: 'Kadaw'
-                                ),
-                              ),
-                            ],
+                              errorStyle: const TextStyle(
+                                  color: Colors
+                                      .red, // Customize error message color
+                                  fontSize:
+                                      12, // Reduce font size of the error message
+                                  height:
+                                      0.5, // Adjust line height for tighter spacing
+                                  fontFamily: 'inter'),
+                              counterText: '',
+                            ),
                           ),
-                          textAlign: TextAlign.center,
                         ),
-                      ),
-                      const SizedBox(height: 5,),
-                      Image.asset("assets/images/icons/us_flag.png",),
-                    ],
-                  ),
-                )
-              ),
+                        _isLoading
+                            ? const SpinningLoader()
+                            : Padding(
+                                padding: EdgeInsets.only(
+                                    left: vww(context, 15),
+                                    right: vww(context, 15),
+                                    top: vhh(context, 3)),
+                                child: ButtonWidget(
+                                  btnType: ButtonWidgetType.loginText,
+                                  borderColor: kColorButtonPrimary,
+                                  textColor: kColorWhite,
+                                  fullColor: kColorButtonPrimary,
+                                  onPressed: () {
+                                    if (usernameError == null &&
+                                        passwordError == null) {
+                                      _handleLogin();
+                                    } else {
+                                      logger.i(
+                                          "Form validation failed or FormState is null.");
+                                    }
+                                  },
+                                ),
+                              ),
+                        SizedBox(
+                          height: vhh(context, 3),
+                        ),
+                        SizedBox(height: vhh(context, 1)),
+                        Padding(
+                          padding: EdgeInsets.only(
+                            left: vww(context, 10),
+                            right: vww(context, 10),
+                          ),
+                          child: Text.rich(
+                            TextSpan(
+                              children: [
+                                const TextSpan(
+                                  text: donthaveaccount,
+                                  style: TextStyle(
+                                      color: kColorGrey,
+                                      fontSize: 14,
+                                      fontFamily: 'inter'),
+                                ),
+                                TextSpan(
+                                  text: heretitle,
+                                  style: const TextStyle(
+                                    color: kColorHereButton,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    decoration: TextDecoration.underline,
+                                    decorationColor: kColorHereButton,
+                                    fontFamily: 'inter'),
+                                  recognizer: TapGestureRecognizer()
+                                    ..onTap = () {
+                                      Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (context) =>
+                                                const SignupStep1Screen(),
+                                          ));
+                                    },
+                                ),
+                              ],
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                        SizedBox(
+                          height: vhh(context, 15),
+                        ),
+                        Padding(
+                          padding: EdgeInsets.only(
+                            left: vww(context, 15),
+                            right: vww(context, 15),
+                          ),
+                          child: Text.rich(
+                            TextSpan(
+                              children: [
+                                const TextSpan(
+                                  text: forgotPasswod,
+                                  style: TextStyle(
+                                      color: kColorGrey,
+                                      fontSize: 14,
+                                      fontFamily: 'inter'),
+                                ),
+                                TextSpan(
+                                  text: hereTitleNo,
+                                  style: const TextStyle(
+                                      color: kColorHereButton,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                      decoration: TextDecoration.underline,
+                                      decorationColor: kColorHereButton,
+                                      fontFamily: 'inter'),
+                                  recognizer: TapGestureRecognizer()
+                                    ..onTap = () {},
+                                ),
+                                const TextSpan(
+                                  text: toReset,
+                                  style: TextStyle(
+                                      color: kColorGrey,
+                                      fontSize: 14,
+                                      fontFamily: 'inter'),
+                                ),
+                              ],
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                        const SizedBox(
+                          height: 5,
+                        ),
+                        Image.asset(
+                          "assets/images/icons/us_flag.png",
+                        ),
+                      ],
+                    ),
+                  )),
             ),
-          )
-        ),
-      )
-    );
+          )),
+        ));
   }
 }
